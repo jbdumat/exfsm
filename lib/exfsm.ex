@@ -3,6 +3,7 @@ defmodule ExFSM do
           {state_name :: atom, event_name :: atom} =>
             {exfsm_module :: atom, [dest_statename :: atom]}
         }
+
   @moduledoc """
   After `use ExFSM` : define FSM transition handler with `deftrans
   fromstate({action_name,params},state)`. A function `fsm` will be created
@@ -59,6 +60,50 @@ defmodule ExFSM do
         {:transition_doc, :opened, :close} => "Open to close",
         {:transition_doc, :opened, :else} => nil,
         {:transition_doc, :opened, :open} => "Open to open"}
+
+  ## Pipeline mode (processless)
+
+  In addition to `deftrans/2`, you can declare a **processless pipeline**
+  that standardizes internal steps of a transition:
+
+      defmodule OrderFSM do
+        use ExFSM
+
+        @doc "Create order: enrich -> client api -> update lines"
+        @to [:created] # fallback if output can't be introspected
+        deftrans_input init({:create_order, params}, state) do
+          @doc "Enrich data"
+          deftrans_action init({:enrich_order, p}, s) do
+            {:ok, p, s}
+          end
+
+          @doc "Call client API"
+          deftrans_action init({:call_client_api, p}, s) do
+            # or {:error_continue, reason, p, s}
+            {:ok, p, s}
+          end
+
+          @doc "Update order lines"
+          deftrans_action init({:update_order_lines, p}, s) do
+            {:ok, p, s}
+          end
+
+          @doc "Decide final state"
+          deftrans_output do
+            # You can use `params`, `state`, `acc` (trace/status) here
+            {:next_state, :created, state}
+          end
+        end
+      end
+
+  Introspection helpers:
+    * `MyFSM.pipelines/0` → %{{state,event} => [:step1, :step2, ...]}
+    * `MyFSM.pipeline_outputs/0` → %{{state,event} => output_fun_name}
+
+  Step return conventions:
+    * `{:ok, params, state}`
+    * `{:error_continue, reason, params, state}`  (trace warning but continue)
+    * `{:error, reason, params, state}`           (by default halts pipeline)
   """
 
   defmacro __using__(_opts) do
@@ -71,7 +116,7 @@ defmodule ExFSM do
 
       # --- pipeline additions ---
       @pipelines %{}          # %{{state,event} => [:step1, :step2, ...]}
-      @pipeline_outputs %{}   # %{{state,event} => output_fun_name}
+      @pipeline_outputs %{}   # %{{state,event} => output_fun_atom}
       @current_pipeline nil   # {state, event}
 
       @before_compile ExFSM
@@ -87,85 +132,6 @@ defmodule ExFSM do
       # pipeline introspection
       def pipelines, do: @pipelines
       def pipeline_outputs, do: @pipeline_outputs
-    end
-  end
-
-  @doc """
-  Déclare la transition *entrée* (même signature que `deftrans`), puis
-  liste des `deftrans_action` et un `deftrans_output`.
-  """
-  defmacro deftrans_input({state, _m, [{event, _p} | _]} = _signature, do: block) do
-    quote do
-      # Initialise le "contexte" de pipeline pour les deftrans_action/output
-      @current_pipeline {unquote(state), unquote(event)}
-      @pipelines Map.put_new(@pipelines, @current_pipeline, [])
-      unquote(block)
-      # La fonction wrapper (définie par deftrans_output) assurera l’exécution
-    end
-  end
-
-  @doc """
-  Déclare une étape interne *sans* l’ajouter au FSM global.
-  La fonction générée a la même convention que les handlers d’état:
-  def state_name({:step_event, params}, state) :: {:ok|:error|:error_continue, params, state}
-  """
-  defmacro deftrans_action({state, _m, [{step_event, _} | _]} = signature, body_block) do
-    quote do
-      # Vérifie que l’on est bien dans un deftrans_input
-      {st, ev} = Module.get_attribute(__MODULE__, :current_pipeline) ||
-                   raise "deftrans_action must be inside a deftrans_input block"
-
-      unless st == unquote(state) do
-        raise "deftrans_action state #{unquote(state)} must match current pipeline #{inspect st}"
-      end
-
-      # Ajoute l’étape au pipeline courant
-      @pipelines Map.update!(@pipelines, {st, ev}, &(&1 ++ [unquote(step_event)]))
-
-      # Doc d’étape
-      doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:action_doc, st, ev, unquote(step_event)}, doc)
-
-      # Définit la fonction d’étape (même nom de fonction que l’état)
-      def unquote(signature), do: unquote(body_block[:do])
-    end
-  end
-
-  @doc """
-  Déclare l’output (décision du next_state) et génère le wrapper de la transition
-  principale qui exécute la pipeline.
-  L’AST du bloc est introspecté pour remplir @fsm (sinon @to sert de fallback).
-  """
-  defmacro deftrans_output(do: body_block) do
-    quote do
-      {st, ev} = Module.get_attribute(__MODULE__, :current_pipeline) ||
-                   raise "deftrans_output must be inside a deftrans_input block"
-
-      output_fun = String.to_atom("__output__#{st}_#{ev}")
-      @pipeline_outputs Map.put(@pipeline_outputs, {st, ev}, output_fun)
-
-      # Doc output
-      doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:output_doc, st, ev}, doc)
-
-      # Renseigne @fsm pour {state,event} en se basant sur l'output (ou @to)
-      @fsm Map.put(
-             @fsm,
-             {st, ev},
-             {__MODULE__, @to || ExFSM.__extract_nextstates__(unquote(body_block[:do]))}
-           )
-
-      # Déclare la fonction output(params, state, acc)
-      def unquote(output_fun)(params, state, acc), do: unquote(body_block[:do])
-
-      # Wrapper de la transition principale: exécute le pipeline puis l’output
-      def unquote(st)({unquote(ev), params}, state) do
-        ExFSM.Pipeline.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
-      end
-
-      # reset éventuel
-      @to nil
-      @current_pipeline nil
     end
   end
 
@@ -194,11 +160,106 @@ defmodule ExFSM do
     end
   end
 
+  # ---------- Pipeline DSL (processless) ----------
+
+  @doc """
+  Declare the *input* transition (same signature as `deftrans/2`), then inside
+  define multiple `deftrans_action/2` and one `deftrans_output/1`.
+  """
+  defmacro deftrans_input({state, _m, [{event, _p} | _]} = _signature, do: block) do
+    quote do
+      # set current pipeline
+      @current_pipeline {unquote(state), unquote(event)}
+      @pipelines Map.put_new(@pipelines, @current_pipeline, [])
+
+      # capture a transition doc for Machine.find_info/2
+      doc = Module.get_attribute(__MODULE__, :doc)
+      @docs Map.put(@docs, {:transition_doc, unquote(state), unquote(event)}, doc)
+
+      unquote(block)
+      # the wrapper function is emitted by deftrans_output/1
+    end
+  end
+
+  @doc """
+  Declare an internal *action step* of the current pipeline.
+  Must be called inside a `deftrans_input/2` block.
+  The generated function shares the state function name, e.g.:
+    def state_name({:step_event, params}, state) :: {:ok|:error|:error_continue, params, state}
+  """
+  defmacro deftrans_action({state, _m, [{step_event, _} | _]} = signature, body_block) do
+    quote do
+      {st, ev} =
+        Module.get_attribute(__MODULE__, :current_pipeline) ||
+          raise "deftrans_action must be inside a deftrans_input block"
+
+      unless st == unquote(state) do
+        raise "deftrans_action state #{unquote(state)} must match current pipeline #{inspect st}"
+      end
+
+      # add step to pipeline spec
+      @pipelines Map.update!(@pipelines, {st, ev}, &(&1 ++ [unquote(step_event)]))
+
+      # step doc
+      doc = Module.get_attribute(__MODULE__, :doc)
+      @docs Map.put(@docs, {:action_doc, st, ev, unquote(step_event)}, doc)
+
+      # define the step function (same state name)
+      def unquote(signature), do: unquote(body_block[:do])
+    end
+  end
+
+  @doc """
+  Declare the *output* callback of the current pipeline.
+  Its body must return e.g. `{:next_state, next, state}` (± timeout).
+  The transition's `{state,event}` is registered in @fsm based on this output
+  body (or `@to` if introspection can't find a literal next_state).
+  It also defines the wrapper function `state_name({event, params}, state)`
+  that executes the pipeline then calls the output.
+  """
+  defmacro deftrans_output(do: body_block) do
+    quote do
+      {st, ev} =
+        Module.get_attribute(__MODULE__, :current_pipeline) ||
+          raise "deftrans_output must be inside a deftrans_input block"
+
+      output_fun = String.to_atom("__output__#{st}_#{ev}")
+      @pipeline_outputs Map.put(@pipeline_outputs, {st, ev}, output_fun)
+
+      # optional output doc
+      doc = Module.get_attribute(__MODULE__, :doc)
+      @docs Map.put(@docs, {:output_doc, st, ev}, doc)
+
+      # register transition in @fsm (infer dest states from output body or fallback to @to)
+      @fsm Map.put(
+             @fsm,
+             {st, ev},
+             {__MODULE__, @to || unquote(Enum.uniq(find_nextstates(body_block[:do])))}
+           )
+
+      # define the output function: output(params, state, acc)
+      def unquote(output_fun)(params, state, acc), do: unquote(body_block[:do])
+
+      # wrapper entry point (behaves like a regular deftrans function)
+      def unquote(st)({unquote(ev), params}, state) do
+        ExFSM.Pipeline.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
+      end
+
+      # reset
+      @to nil
+      @current_pipeline nil
+    end
+  end
+
+  # ---------- AST introspection (used by deftrans & deftrans_output) ----------
+
   defp find_nextstates({:{}, _, [:next_state, state | _]}) when is_atom(state), do: [state]
   defp find_nextstates({_, _, asts}), do: find_nextstates(asts)
   defp find_nextstates({_, asts}), do: find_nextstates(asts)
   defp find_nextstates(asts) when is_list(asts), do: Enum.flat_map(asts, &find_nextstates/1)
   defp find_nextstates(_), do: []
+
+  # ---------- Event bypass (unchanged) ----------
 
   defmacro defbypass({event, _meta, _args} = signature, body_block) do
     quote do
@@ -208,6 +269,53 @@ defmodule ExFSM do
       def unquote(signature), do: unquote(body_block[:do])
     end
   end
+end
+
+defmodule ExFSM.Pipeline do
+  @moduledoc false
+
+  @type step_status :: :ok | :warning | :error
+  @type trace_entry :: {step :: atom, status :: :ok | {:error_continue, term} | {:error, term}}
+
+  @doc false
+  @spec run(module, {atom, atom}, any, any, keyword) ::
+          {:next_state, any}
+          | {:next_state, any, integer}
+          | {:error, term}
+          | any
+  def run(mod, {state_name, event}, params, state, opts \\ []) do
+    steps = Map.get(mod.pipelines(), {state_name, event}, [])
+    out_fun =
+      Map.get(mod.pipeline_outputs(), {state_name, event}) ||
+        String.to_atom("__output__#{state_name}_#{event}")
+
+    on_error = Keyword.get(opts, :on_error, :halt)
+
+    {params, state, acc} =
+      Enum.reduce_while(steps, {params, state, %{status: :ok, steps: []}}, fn step, {p, s, a} ->
+        case apply(mod, state_name, [{step, p}, s]) do
+          {:ok, p2, s2} ->
+            {:cont, {p2, s2, put_step(a, step, :ok)}}
+
+          {:error_continue, reason, p2, s2} ->
+            {:cont, {p2, s2, put_step(a, step, {:error_continue, reason}) |> warn!()}}
+
+          {:error, reason, p2, s2} ->
+            a2 = put_step(a, step, {:error, reason}) |> error!()
+            if on_error == :continue, do: {:cont, {p2, s2, a2}}, else: {:halt, {p2, s2, a2}}
+
+          other ->
+            raise ArgumentError,
+                  "step #{inspect(step)} returned invalid value: #{inspect(other)}"
+        end
+      end)
+
+    apply(mod, out_fun, [params, state, acc])
+  end
+
+  defp put_step(acc, step, tag), do: %{acc | steps: acc.steps ++ [{step, tag}]}
+  defp warn!(acc), do: %{acc | status: (acc.status == :error && :error) || :warning}
+  defp error!(acc), do: %{acc | status: :error}
 end
 
 defmodule ExFSM.Machine do
@@ -270,7 +378,7 @@ defmodule ExFSM.Machine do
     def set_state_name(state, state_name)
   end
 
-  @doc "return the FSM as a map of transitions %{{state,action}=>{handler,[dest_states]}} based on handlers"
+  @doc "return the FSM as a map of transitions %{{state,action}=>{handler,[dest_states]}} based on handlers"
   @spec fsm([exfsm_module :: atom]) :: ExFSM.fsm_spec()
   def fsm(handlers) when is_list(handlers),
     do: handlers |> Enum.map(& &1.fsm()) |> Enum.concat() |> Enum.into(%{})
@@ -375,49 +483,4 @@ defmodule ExFSM.Machine do
   def action_available?(state, action) do
     action in available_actions(state)
   end
-end
-
-defmodule ExFSM.Pipeline do
-  @moduledoc false
-
-  @type step_status :: :ok | :warning | :error
-  @type trace_entry :: {step :: atom, status :: :ok | {:error_continue, term} | {:error, term}}
-
-  @spec run(module, {atom, atom}, any, any, keyword) ::
-          {:next_state, atom, any}
-          | {:next_state, atom, any, integer}
-          | {:error, term}
-          | any
-  def run(mod, {state_name, event}, params, state, opts \\ []) do
-    steps = Map.get(mod.pipelines(), {state_name, event}, [])
-    out_fun = Map.get(mod.pipeline_outputs(), {state_name, event}) ||
-                String.to_atom("__output__#{state_name}_#{event}")
-
-    on_error = Keyword.get(opts, :on_error, :halt)
-
-    {params, state, acc} =
-      Enum.reduce_while(steps, {params, state, %{status: :ok, steps: []}}, fn step, {p, s, a} ->
-        case apply(mod, state_name, [{step, p}, s]) do
-          {:ok, p2, s2} ->
-            {:cont, {p2, s2, put_step(a, step, :ok)}}
-
-          {:error_continue, reason, p2, s2} ->
-            {:cont, {p2, s2, put_step(a, step, {:error_continue, reason}) |> warn!()}}
-
-          {:error, reason, p2, s2} ->
-            a2 = put_step(a, step, {:error, reason}) |> error!()
-            if on_error == :continue, do: {:cont, {p2, s2, a2}}, else: {:halt, {p2, s2, a2}}
-
-          other ->
-            raise ArgumentError, "step #{inspect step} returned invalid value: #{inspect other}"
-        end
-      end)
-
-    # L’output décide du next_state et peut utiliser acc (trace + statut)
-    apply(mod, out_fun, [params, state, acc])
-  end
-
-  defp put_step(acc, step, tag), do: %{acc | steps: acc.steps ++ [{step, tag}]}
-  defp warn!(acc), do: %{acc | status: (acc.status == :error && :error) || :warning}
-  defp error!(acc), do: %{acc | status: :error}
 end
