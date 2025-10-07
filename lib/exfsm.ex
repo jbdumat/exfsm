@@ -63,8 +63,8 @@ defmodule ExFSM do
 
   ## Pipeline mode (processless)
 
-  In addition to `deftrans/2`, you can declare a **processless pipeline**
-  that standardizes internal steps of a transition:
+  You can declare a **processless pipeline** that standardizes internal steps
+  of a transition:
 
       defmodule OrderFSM do
         use ExFSM
@@ -218,23 +218,27 @@ defmodule ExFSM do
   that executes the pipeline then calls the output.
   """
   defmacro deftrans_output(do: body_block) do
-    quote do
-      {st, ev} =
-        Module.get_attribute(__MODULE__, :current_pipeline) ||
-          raise "deftrans_output must be inside a deftrans_input block"
+    caller_mod = __CALLER__.module
 
-      output_fun = String.to_atom("__output__#{st}_#{ev}")
-      @pipeline_outputs Map.put(@pipeline_outputs, {st, ev}, output_fun)
+    {st, ev} =
+      Module.get_attribute(caller_mod, :current_pipeline) ||
+        raise "deftrans_output must be inside a deftrans_input block"
+
+    output_fun = String.to_atom("__output__#{st}_#{ev}")
+    states = Enum.uniq(find_nextstates(body_block[:do]))
+
+    quote do
+      @pipeline_outputs Map.put(@pipeline_outputs, {unquote(st), unquote(ev)}, unquote(output_fun))
 
       # optional output doc
       doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:output_doc, st, ev}, doc)
+      @docs Map.put(@docs, {:output_doc, unquote(st), unquote(ev)}, doc)
 
       # register transition in @fsm (infer dest states from output body or fallback to @to)
       @fsm Map.put(
              @fsm,
-             {st, ev},
-             {__MODULE__, @to || unquote(Enum.uniq(find_nextstates(body_block[:do])))}
+             {unquote(st), unquote(ev)},
+             {__MODULE__, @to || unquote(states)}
            )
 
       # define the output function: output(params, state, acc)
