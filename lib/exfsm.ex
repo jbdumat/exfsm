@@ -167,91 +167,98 @@ defmodule ExFSM do
   define multiple `deftrans_action/2` and one `deftrans_output/1`.
   """
   defmacro deftrans_input({state, _m, [{event, _p} | _]} = _signature, do: block) do
+    mod = __CALLER__.module
+
+    # marquer le pipeline courant
+    Module.put_attribute(mod, :current_pipeline, {state, event})
+
+    # init pipelines map si absent puis ajouter l’entrée
+    pipelines = Module.get_attribute(mod, :pipelines) || %{}
+    unless Map.has_key?(pipelines, {state, event}) do
+      Module.put_attribute(mod, :pipelines, Map.put(pipelines, {state, event}, []))
+    end
+
+    # capturer la doc de transition (pour find_info/2)
+    doc  = Module.get_attribute(mod, :doc)
+    docs = Module.get_attribute(mod, :docs) || %{}
+    Module.put_attribute(mod, :docs, Map.put(docs, {:transition_doc, state, event}, doc))
+
     quote do
-      # set current pipeline
-      @current_pipeline {unquote(state), unquote(event)}
-      @pipelines Map.put_new(@pipelines, @current_pipeline, [])
-
-      # capture a transition doc for Machine.find_info/2
-      doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:transition_doc, unquote(state), unquote(event)}, doc)
-
       unquote(block)
-      # the wrapper function is emitted by deftrans_output/1
+      # le wrapper sera généré par deftrans_output/1
     end
   end
 
   @doc """
   Declare an internal *action step* of the current pipeline.
   Must be called inside a `deftrans_input/2` block.
-  The generated function shares the state function name, e.g.:
-    def state_name({:step_event, params}, state) :: {:ok|:error|:error_continue, params, state}
   """
   defmacro deftrans_action({state, _m, [{step_event, _} | _]} = signature, body_block) do
+    mod = __CALLER__.module
+    {st, ev} =
+      Module.get_attribute(mod, :current_pipeline) ||
+        raise "deftrans_action must be inside a deftrans_input block"
+
+    if st != state do
+      raise "deftrans_action state #{inspect(state)} must match current pipeline #{inspect st}"
+    end
+
+    # append step to pipeline spec
+    pipelines = Module.get_attribute(mod, :pipelines) || %{}
+    steps = Map.get(pipelines, {st, ev}, [])
+    Module.put_attribute(mod, :pipelines, Map.put(pipelines, {st, ev}, steps ++ [step_event]))
+
+    # step doc
+    doc  = Module.get_attribute(mod, :doc)
+    docs = Module.get_attribute(mod, :docs) || %{}
+    Module.put_attribute(mod, :docs, Map.put(docs, {:action_doc, st, ev, step_event}, doc))
+
     quote do
-      {st, ev} =
-        Module.get_attribute(__MODULE__, :current_pipeline) ||
-          raise "deftrans_action must be inside a deftrans_input block"
-
-      unless st == unquote(state) do
-        raise "deftrans_action state #{unquote(state)} must match current pipeline #{inspect st}"
-      end
-
-      # add step to pipeline spec
-      @pipelines Map.update!(@pipelines, {st, ev}, &(&1 ++ [unquote(step_event)]))
-
-      # step doc
-      doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:action_doc, st, ev, unquote(step_event)}, doc)
-
-      # define the step function (same state name)
       def unquote(signature), do: unquote(body_block[:do])
     end
   end
 
   @doc """
-  Declare the *output* callback of the current pipeline.
+  Declare the *output* callback of the current pipeline and the wrapper entry function.
   Its body must return e.g. `{:next_state, next, state}` (± timeout).
-  The transition's `{state,event}` is registered in @fsm based on this output
-  body (or `@to` if introspection can't find a literal next_state).
-  It also defines the wrapper function `state_name({event, params}, state)`
-  that executes the pipeline then calls the output.
+  Registers `{state,event}` in @fsm using output body (or `@to` as fallback).
   """
   defmacro deftrans_output(do: body_block) do
-    caller_mod = __CALLER__.module
-
+    mod = __CALLER__.module
     {st, ev} =
-      Module.get_attribute(caller_mod, :current_pipeline) ||
+      Module.get_attribute(mod, :current_pipeline) ||
         raise "deftrans_output must be inside a deftrans_input block"
 
     output_fun = String.to_atom("__output__#{st}_#{ev}")
-    states = Enum.uniq(find_nextstates(body_block[:do]))
+
+    # enregistrer output_fun
+    outs = Module.get_attribute(mod, :pipeline_outputs) || %{}
+    Module.put_attribute(mod, :pipeline_outputs, Map.put(outs, {st, ev}, output_fun))
+
+    # doc output
+    doc  = Module.get_attribute(mod, :doc)
+    docs = Module.get_attribute(mod, :docs) || %{}
+    Module.put_attribute(mod, :docs, Map.put(docs, {:output_doc, st, ev}, doc))
+
+    # maj @fsm (destinations depuis le corps output, sinon @to)
+    to     = Module.get_attribute(mod, :to)
+    # ✅ appel local à la fonction privée :
+    states = to || Enum.uniq(find_nextstates(body_block[:do]))
+    fsm    = Module.get_attribute(mod, :fsm) || %{}
+    Module.put_attribute(mod, :fsm, Map.put(fsm, {st, ev}, {mod, states}))
+
+    # reset @to / @current_pipeline
+    Module.put_attribute(mod, :to, nil)
+    Module.put_attribute(mod, :current_pipeline, nil)
 
     quote do
-      @pipeline_outputs Map.put(@pipeline_outputs, {unquote(st), unquote(ev)}, unquote(output_fun))
-
-      # optional output doc
-      doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:output_doc, unquote(st), unquote(ev)}, doc)
-
-      # register transition in @fsm (infer dest states from output body or fallback to @to)
-      @fsm Map.put(
-             @fsm,
-             {unquote(st), unquote(ev)},
-             {__MODULE__, @to || unquote(states)}
-           )
-
-      # define the output function: output(params, state, acc)
+      # output(params, state, acc)
       def unquote(output_fun)(params, state, acc), do: unquote(body_block[:do])
 
-      # wrapper entry point (behaves like a regular deftrans function)
+      # wrapper d’entrée: exécute la pipeline puis l’output
       def unquote(st)({unquote(ev), params}, state) do
         ExFSM.Pipeline.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
       end
-
-      # reset
-      @to nil
-      @current_pipeline nil
     end
   end
 
