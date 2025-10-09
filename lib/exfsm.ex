@@ -225,6 +225,7 @@ defmodule ExFSM do
   """
   defmacro deftrans_output(do: body_block) do
     mod = __CALLER__.module
+
     {st, ev} =
       Module.get_attribute(mod, :current_pipeline) ||
         raise "deftrans_output must be inside a deftrans_input block"
@@ -240,10 +241,9 @@ defmodule ExFSM do
     docs = Module.get_attribute(mod, :docs) || %{}
     Module.put_attribute(mod, :docs, Map.put(docs, {:output_doc, st, ev}, doc))
 
-    # maj @fsm (destinations depuis le corps output, sinon @to)
+    # maj @fsm (destinations: introspection de l'AST du bloc, pas [:do] !)
     to     = Module.get_attribute(mod, :to)
-    # ✅ appel local à la fonction privée :
-    states = to || Enum.uniq(find_nextstates(body_block[:do]))
+    states = to || Enum.uniq(find_nextstates(body_block))
     fsm    = Module.get_attribute(mod, :fsm) || %{}
     Module.put_attribute(mod, :fsm, Map.put(fsm, {st, ev}, {mod, states}))
 
@@ -253,7 +253,7 @@ defmodule ExFSM do
 
     quote do
       # output(params, state, acc)
-      def unquote(output_fun)(params, state, acc), do: unquote(body_block[:do])
+      def unquote(output_fun)(params, state, acc), do: unquote(body_block)
 
       # wrapper d’entrée: exécute la pipeline puis l’output
       def unquote(st)({unquote(ev), params}, state) do
@@ -261,6 +261,7 @@ defmodule ExFSM do
       end
     end
   end
+
 
   # ---------- AST introspection (used by deftrans & deftrans_output) ----------
 
