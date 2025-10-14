@@ -218,7 +218,7 @@ defmodule ExFSM do
     end
   end
 
-  @doc """
+   @doc """
   Declare the *output* callback of the current pipeline and the wrapper entry function.
   Its body must return e.g. `{:next_state, next, state}` (± timeout).
   Registers `{state,event}` in @fsm using output body (or `@to` as fallback).
@@ -232,28 +232,35 @@ defmodule ExFSM do
 
     output_fun = String.to_atom("__output__#{st}_#{ev}")
 
-    # enregistrer output_fun
+    # 1) Enregistre output_fun et doc
     outs = Module.get_attribute(mod, :pipeline_outputs) || %{}
     Module.put_attribute(mod, :pipeline_outputs, Map.put(outs, {st, ev}, output_fun))
-
-    # doc output
     doc  = Module.get_attribute(mod, :doc)
     docs = Module.get_attribute(mod, :docs) || %{}
     Module.put_attribute(mod, :docs, Map.put(docs, {:output_doc, st, ev}, doc))
 
-    # maj @fsm (destinations: introspection de l'AST du bloc, pas [:do] !)
+    # 2) Introspection des destinations à partir du bloc (PAS [:do])
     to     = Module.get_attribute(mod, :to)
     states = to || Enum.uniq(find_nextstates(body_block))
     fsm    = Module.get_attribute(mod, :fsm) || %{}
     Module.put_attribute(mod, :fsm, Map.put(fsm, {st, ev}, {mod, states}))
 
-    # reset @to / @current_pipeline
+    # 3) Réécriture AST pour binder params/state/acc sur les args de la fonction
+    rewritten_body =
+      Macro.postwalk(body_block, fn
+        {:params, meta, ctx} -> {:var!, meta, [{:params, meta, ctx}]}
+        {:state,  meta, ctx} -> {:var!, meta, [{:state,  meta, ctx}]}
+        {:acc,    meta, ctx} -> {:var!, meta, [{:acc,    meta, ctx}]}
+        other -> other
+      end)
+
+    # 4) Reset des attributs
     Module.put_attribute(mod, :to, nil)
     Module.put_attribute(mod, :current_pipeline, nil)
 
     quote do
       # output(params, state, acc)
-      def unquote(output_fun)(params, state, acc), do: unquote(body_block)
+      def unquote(output_fun)(params, state, acc), do: unquote(rewritten_body)
 
       # wrapper d’entrée: exécute la pipeline puis l’output
       def unquote(st)({unquote(ev), params}, state) do
@@ -261,7 +268,6 @@ defmodule ExFSM do
       end
     end
   end
-
 
   # ---------- AST introspection (used by deftrans & deftrans_output) ----------
 
