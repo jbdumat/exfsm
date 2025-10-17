@@ -1,4 +1,4 @@
-# ExFSM #
+# ExFSM.V2 #
 
 [![Build Status](https://travis-ci.org/kbrw/exfsm.svg?branch=master)](https://travis-ci.org/kbrw/exfsm)
 

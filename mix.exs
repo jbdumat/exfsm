@@ -1,9 +1,9 @@
-defmodule ExFSM.Mixfile do
+defmodule ExFSM.V2.Mixfile do
   use Mix.Project
 
   def project do
     [
-      app: :exfsm,
+      app: :exfsm_v2,
       version: "0.1.6",
       elixir:
         if Mix.env() == :dev do
@@ -14,7 +14,7 @@ defmodule ExFSM.Mixfile do
       build_embedded: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :test,
       docs: [
-        main: "ExFSM",
+        main: "ExFSM.V2",
         source_url: "https://github.com/kbrw/exfsm/tree/v0.1.6",
         source_ref: "master"
       ],

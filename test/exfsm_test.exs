@@ -1,5 +1,5 @@
 defmodule ExFSMTest do
   use ExUnit.Case
-  doctest ExFSM
-  doctest ExFSM.Machine
+  doctest ExFSM.V2
+  doctest ExFSM.V2.Machine
 end
