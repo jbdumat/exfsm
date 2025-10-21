@@ -1,0 +1,58 @@
+graph TD;
+    subgraph RetailOrders.Init.SkipSourcing
+        RetailOrders.Init.SkipSourcing.pending_lines_creation --> |running_lines_creation| RetailOrders.Init.SkipSourcing.sourced
+		RetailOrders.Init.SkipSourcing.init --> |create| RetailOrders.Init.SkipSourcing.pending_lines_creation
+    end
+    RetailOrders.Init.SkipSourcing.sourced --> RetailOrders.Ship.Bateau.sourced
+	RetailOrders.Init.SkipSourcing.sourced --> RetailOrders.Ship.Camion.sourced
+	RetailOrders.Init.SkipSourcing.sourced --> RetailOrders.Ship.Teleportation.sourced
+
+
+    subgraph RetailOrders.Init.Normal
+        RetailOrders.Init.Normal.pending_lines_creation --> |running_lines_creation| RetailOrders.Init.Normal.pending
+		RetailOrders.Init.Normal.init --> |create| RetailOrders.Init.Normal.pending_lines_creation
+    end
+    RetailOrders.Init.Normal.pending --> RetailOrders.Pending.GoodMovement.pending
+	RetailOrders.Init.Normal.pending --> RetailOrders.Pending.StoCreation.pending
+
+
+    subgraph RetailOrders.Pending.GoodMovement
+        RetailOrders.Pending.GoodMovement.pending --> |sourcing| RetailOrders.Pending.GoodMovement.sourced
+    end
+    RetailOrders.Pending.GoodMovement.sourced --> RetailOrders.Ship.Bateau.sourced
+	RetailOrders.Pending.GoodMovement.sourced --> RetailOrders.Ship.Camion.sourced
+	RetailOrders.Pending.GoodMovement.sourced --> RetailOrders.Ship.Teleportation.sourced
+
+
+    subgraph RetailOrders.Pending.StoCreation
+        RetailOrders.Pending.StoCreation.pending_response_from_sto --> |sto_response| RetailOrders.Pending.StoCreation.sourced
+		RetailOrders.Pending.StoCreation.pending --> |sourcing| RetailOrders.Pending.StoCreation.pending_response_from_sto
+    end
+    RetailOrders.Pending.StoCreation.sourced --> RetailOrders.Ship.Bateau.sourced
+	RetailOrders.Pending.StoCreation.sourced --> RetailOrders.Ship.Camion.sourced
+	RetailOrders.Pending.StoCreation.sourced --> RetailOrders.Ship.Teleportation.sourced
+
+
+    subgraph RetailOrders.Ship.Teleportation
+        RetailOrders.Ship.Teleportation.sourced --> |shipped| RetailOrders.Ship.Teleportation.in_store
+    end
+    
+
+
+    subgraph RetailOrders.Ship.Camion
+        RetailOrders.Ship.Camion.sourced --> |shipped| RetailOrders.Ship.Camion.on_the_road
+		RetailOrders.Ship.Camion.on_the_road --> |new_camion| RetailOrders.Ship.Camion.on_the_road
+		RetailOrders.Ship.Camion.on_the_road --> |camion_crash| RetailOrders.Ship.Camion.error
+		RetailOrders.Ship.Camion.on_the_road --> |arrived| RetailOrders.Ship.Camion.in_store
+    end
+    
+
+
+    subgraph RetailOrders.Ship.Bateau
+        RetailOrders.Ship.Bateau.wait_for_bateau_update --> |bateau_update| RetailOrders.Ship.Bateau.wait_for_bateau_update
+		RetailOrders.Ship.Bateau.wait_for_bateau_update --> |bateau_update| RetailOrders.Ship.Bateau.in_store
+		RetailOrders.Ship.Bateau.sourced --> |shipped2| RetailOrders.Ship.Bateau.wait_for_bateau_update
+		RetailOrders.Ship.Bateau.sourced --> |shipped| RetailOrders.Ship.Bateau.wait_for_bateau_update
+    end
+    
+
