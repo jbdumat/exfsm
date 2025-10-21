@@ -136,7 +136,6 @@ defmodule ExFSM.V2 do
            )
       doc = Module.get_attribute(__MODULE__, :doc)
       @docs Map.put(@docs, {:transition_doc, unquote(state), unquote(trans)}, doc)
-      Module.delete_attribute(__MODULE__, :doc)
       def unquote(signature), do: unquote(body_block[:do])
       @to nil
     end
