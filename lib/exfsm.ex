@@ -1,673 +1,442 @@
-defmodule ExFSM.V2 do
-  @type fsm_spec :: %{
-          {state_name :: atom, event_name :: atom} =>
-            {exfsm_module :: atom, [dest_statename :: atom]}
-        }
-
+defmodule ExFSM do
   @moduledoc """
-  Minimal FSM DSL with optional **processless pipelines**.
+  DSL de FSM basé sur *rules* (graphes conditionnels).
+  Transitions déclarées avec `deftrans_rules/2` puis règles avec `defrule/2`,
+  et clôture par `defrules_commit/1` + `defrules_exit/4`.
 
-  ## Classic transitions
+  Introspection:
+    * rules_graph/0     -> %{{state,event} => %{entry:, graph:, weights: %{rule=>weight}}}
+    * rules_outputs/0   -> %{{state,event} => exit_fun_atom}
+    * fsm/0             -> %{{state,event} => {__MODULE__, to_states}}
+    * event_bypasses/0  -> %{event => __MODULE__}
 
-      defmodule Door do
-        use ExFSM.V2
-        @to [:opened]
-        @doc "Close to open"
-        deftrans closed({:open, _}, s) do
-          {:next_state, :opened, s}
-        end
-      end
-
-  ## Pipeline mode (processless)
-
-      defmodule OrderFSM do
-        use ExFSM.V2
-
-        @doc "Create order: enrich -> client api -> update lines"
-        @to [:created] # fallback if output can't be introspected
-        deftrans_input init({:create_order, params}, state) do
-          @doc "Enrich data"
-          deftrans_action init({:enrich_order, p}, s) do
-            {:ok, p, s}
-          end
-
-          @doc "Call client API"
-          deftrans_action init({:call_client_api, p}, s) do
-            {:ok, p, s}
-          end
-
-          @doc "Update order lines"
-          deftrans_action init({:update_order_lines, p}, s) do
-            {:ok, p, s}
-          end
-
-          @doc "Decide final state"
-          deftrans_output(params, state, acc) do
-            {:next_state, :created, state}
-          end
-        end
-      end
-
-  Introspection helpers (added by `use ExFSM.V2`):
-    * `MyFSM.fsm/0` → %{{state,event} => {handler, [dest_states]}}
-    * `MyFSM.pipelines/0` → %{{state,event} => [:step1, :step2, ...]}
-    * `MyFSM.pipeline_outputs/0` → %{{state,event} => output_fun_atom}
-    * `MyFSM.docs/0` → map of user docs for transitions/actions/output
-
-  Step return conventions:
-    * `{:ok, params, state}`
-    * `{:error_continue, reason, params, state}`  (trace warning but continue)
-    * `{:error, reason, params, state}`           (by default halts pipeline)
   """
 
-  # ---------------------------------------------------------------------------
-  # __using__/1 — module attributes & introspection
-  # ---------------------------------------------------------------------------
-
+  # ------------------------------- __using__ ----------------------------------
   defmacro __using__(_opts) do
     quote do
-      import ExFSM.V2
+      import ExFSM
+
       @fsm %{}
-      @bypasses %{}
       @docs %{}
-      @to nil
+      @bypasses %{}
+      @to nil               # dests de fallback pour fsm/0
 
-      # --- pipeline additions ---
-      @pipelines %{}          # %{{state,event} => [:step1, :step2, ...]}
-      @pipeline_outputs %{}   # %{{state,event} => output_fun_atom}
-      @current_pipeline nil   # {state, event}
+      # Rules
+      @rules_graph %{}      # %{{state,event} => %{entry:, graph: %{rule => %{links: [...] }}, weights: %{rule=>weight}}}
+      @rules_outputs %{}    # %{{state,event} => :__rules_exit__...}
+      @current_ruleset nil  # {state,event}
+      @entry_rule nil       # override possible dans un bloc
+      @weights %{}          # weights optionnels par règle
 
-      @before_compile ExFSM.V2
+      @before_compile ExFSM
     end
   end
 
-  defmacro __before_compile__(env) do
-    mod = env.module
-
-    snap = Module.get_attribute(mod, :__exfsm_snapshot__) || %{}
-
-    fsm              = Map.get(snap, :fsm)              || (Module.get_attribute(mod, :fsm)              || %{})
-    bypasses         = Map.get(snap, :bypasses)         || (Module.get_attribute(mod, :bypasses)         || %{})
-    docs             = Map.get(snap, :docs)             || (Module.get_attribute(mod, :docs)             || %{})
-    pipelines        = Map.get(snap, :pipelines)        || (Module.get_attribute(mod, :pipelines)        || %{})
-    pipeline_outputs = Map.get(snap, :pipeline_outputs) || (Module.get_attribute(mod, :pipeline_outputs) || %{})
-
+  defmacro __before_compile__(_env) do
     quote do
-      def fsm,              do: unquote(Macro.escape(fsm))
-      def event_bypasses,   do: unquote(Macro.escape(bypasses))
-      def docs,             do: unquote(Macro.escape(docs))
-      def pipelines,        do: unquote(Macro.escape(pipelines))
-      def pipeline_outputs, do: unquote(Macro.escape(pipeline_outputs))
-
-      def __debug_attrs__ do
-        %{
-          fsm: fsm(),
-          pipelines: pipelines(),
-          pipeline_outputs: pipeline_outputs(),
-          bypasses: event_bypasses(),
-          docs: docs()
-        }
-      end
+      def fsm, do: @fsm || %{}
+      def docs, do: @docs || %{}
+      def event_bypasses, do: @bypasses || %{}
+      def rules_graph, do: @rules_graph || %{}
+      def rules_outputs, do: @rules_outputs || %{}
     end
   end
 
+  # ------------- helpers visibles depuis les modules utilisateurs -------------
+  def next_rule({rule, params}), do: {:__next__, {rule, params}}
+  def rules_exit(exit), do: {:__exit__, exit}
+  def dbg(mod, tag, attr) do
+    IO.inspect(Module.get_attribute(mod, attr), label: "#{tag}")
+  end
 
   # ---------------------------------------------------------------------------
-  # Classic deftrans/2
+  # Classic deftrans / defbypass
   # ---------------------------------------------------------------------------
 
-  @doc """
-  Define a function of type `transition` describing a state and its transition.
-  The function name is the state name, the transition is the first argument. A
-  state object can be modified and is the second argument.
+  @type transition ::
+          ({event_name :: atom, event_param :: any}, state :: any ->
+             {:next_state, event_name :: atom, state :: any}
+           | {:next_state, event_name :: atom, state :: any, non_neg_integer}
+           | {:keep_state, state :: any}
+           | {:error, term})
 
-      deftrans opened({:close_door,_params},state) do
-        {:next_state,:closed,state}
-      end
-  """
-  @type transition :: ({event_name :: atom, event_param :: any}, state :: any ->
-                         {:next_state, event_name :: atom, state :: any})
-  defmacro deftrans({state, _meta, [{trans, _param} | _rest]} = signature, body_block) do
+  defmacro deftrans({state, _m, [{event, _param} | _]} = signature, body_block) do
     quote do
       @fsm Map.put(
-             @fsm,
-             {unquote(state), unquote(trans)},
-             {__MODULE__, @to || unquote(Enum.uniq(find_nextstates(body_block[:do])))}
+             @fsm || %{},
+             {unquote(state), unquote(event)},
+             {__MODULE__, @to || unquote(Enum.uniq(ExFSM.find_nextstates(body_block[:do])))}
            )
+
       doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:transition_doc, unquote(state), unquote(trans)}, doc)
+      @docs Map.put(@docs || %{}, {:transition_doc, unquote(state), unquote(event)}, doc)
       def unquote(signature), do: unquote(body_block[:do])
       @to nil
     end
   end
 
-# ---------------------------------------------------------------------------
-# Pipeline DSL (processless)
-# ---------------------------------------------------------------------------
-
-@doc """
-Declare the *input* transition (same signature as `deftrans/2`), then inside
-define multiple `deftrans_action/2` and one `deftrans_output/4`.
-"""
-defmacro deftrans_input({state, _m, [{event, _p} | _]}, do: block) do
-  mod = __CALLER__.module
-  Module.put_attribute(mod, :current_pipeline, {state, event})
-
-  pipelines = Module.get_attribute(mod, :pipelines) || %{}
-  unless Map.has_key?(pipelines, {state, event}) do
-    Module.put_attribute(mod, :pipelines, Map.put(pipelines, {state, event}, []))
-  end
-
-  doc  = Module.get_attribute(mod, :doc)
-  docs = Module.get_attribute(mod, :docs) || %{}
-  Module.put_attribute(mod, :docs, Map.put(docs, {:transition_doc, state, event}, doc))
-  Module.delete_attribute(mod, :doc)
-
-  quote do
-    unquote(block)
-    # reset @current_pipeline dans deftrans_output/4
-  end
-end
-
-@doc """
-Declare an internal *action step* of the current pipeline.
-Must be called inside a `deftrans_input/2` block.
-"""
-defmacro deftrans_action({state_ast, _m, [{step_event, _} | _]} = signature, body) do
-  mod = __CALLER__.module
-  {st, ev} =
-    Module.get_attribute(mod, :current_pipeline) ||
-      raise "deftrans_action must be inside a deftrans_input block"
-
-  pipelines = Module.get_attribute(mod, :pipelines) || %{}
-  steps = Map.get(pipelines, {st, ev}, [])
-  Module.put_attribute(mod, :pipelines, Map.put(pipelines, {st, ev}, steps ++ [step_event]))
-
-  doc  = Module.get_attribute(mod, :doc)
-  docs = Module.get_attribute(mod, :docs) || %{}
-  Module.put_attribute(mod, :docs, Map.put(docs, {:action_doc, st, ev, step_event}, doc))
-  Module.delete_attribute(mod, :doc)
-
-  _ = state_ast
-
-  quote do
-    def unquote(signature), do: unquote(body[:do])
-  end
-end
-
-@doc """
-Declare the *output* callback of the current pipeline and the wrapper entry function.
-Syntax: `deftrans_output(params, state, acc) do ... end`
-(explicit args for clarity and compile-time safety)
-"""
-defmacro deftrans_output(params_ast, state_ast, acc_ast, do: body) do
-  mod = __CALLER__.module
-  {st, ev} =
-    Module.get_attribute(mod, :current_pipeline) ||
-      raise "deftrans_output must be inside a deftrans_input block"
-
-  output_fun = String.to_atom("__output__#{st}_#{ev}")
-
-  # --- DOC output
-  doc  = Module.get_attribute(mod, :doc)
-  docs = Module.get_attribute(mod, :docs) || %{}
-  Module.put_attribute(mod, :docs, Map.put(docs, {:output_doc, st, ev}, doc))
-  Module.delete_attribute(mod, :doc)
-
-  # --- Destinations (introspection de l'AST du bloc) + fallback @to
-  to_attr  = Module.get_attribute(mod, :to)
-  inferred =
-    case find_nextstates(body) do
-      [] -> to_attr || []
-      xs -> Enum.uniq(xs)
-    end
-
-  # --- Enregistrer dans les attributs
-  fsm = Module.get_attribute(mod, :fsm) || %{}
-  fsm2 = Map.put(fsm, {st, ev}, {mod, inferred})
-  Module.put_attribute(mod, :fsm, fsm2)
-
-  outs = Module.get_attribute(mod, :pipeline_outputs) || %{}
-  outs2 = Map.put(outs, {st, ev}, output_fun)
-  Module.put_attribute(mod, :pipeline_outputs, outs2)
-
-  pipes = Module.get_attribute(mod, :pipelines) || %{}
-  bypasses = Module.get_attribute(mod, :bypasses) || %{}
-
-  # --- SNAPSHOT figé pour __before_compile__
-  snapshot = %{
-    fsm: fsm2,
-    pipelines: pipes,
-    pipeline_outputs: outs2,
-    docs: Module.get_attribute(mod, :docs) || %{},
-    bypasses: bypasses
-  }
-
-  Module.put_attribute(mod, :__exfsm_snapshot__, snapshot)
-
-  # reset de quelques attributs
-  Module.put_attribute(mod, :to, nil)
-  Module.put_attribute(mod, :current_pipeline, nil)
-
-  quote do
-    # consommer @to pour éviter le warning "was set but never used"
-    _ = @to
-
-    # output(params, state, acc)
-    def unquote(output_fun)(unquote(params_ast), unquote(state_ast), unquote(acc_ast)) do
-      unquote(body)
-    end
-
-    # wrapper d’entrée: exécute la pipeline puis l’output
-    def unquote(st)({unquote(ev), params}, state) do
-      ExFSM.V2.Pipeline.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
-    end
-  end
-end
-
-
-
-  # ---------------------------------------------------------------------------
-  # AST introspection (used by deftrans & deftrans_output)
-  # ---------------------------------------------------------------------------
-
-  defp find_nextstates({:{}, _, [:next_state, state | _]}) when is_atom(state), do: [state]
-  defp find_nextstates({_, _, asts}), do: find_nextstates(asts)
-  defp find_nextstates({_, asts}), do: find_nextstates(asts)
-  defp find_nextstates(asts) when is_list(asts), do: Enum.flat_map(asts, &find_nextstates/1)
-  defp find_nextstates(_), do: []
-
-  # ---------------------------------------------------------------------------
-  # Event bypass (unchanged)
-  # ---------------------------------------------------------------------------
-
-  defmacro defbypass({event, _meta, _args} = signature, body_block) do
+  defmacro defbypass({event, _m, [_params, _obj]} = signature, body) do
     quote do
-      @bypasses Map.put(@bypasses, unquote(event), __MODULE__)
+      @bypasses Map.put(@bypasses || %{}, unquote(event), __MODULE__)
       doc = Module.get_attribute(__MODULE__, :doc)
-      @docs Map.put(@docs, {:event_doc, unquote(event)}, doc)
-      Module.delete_attribute(__MODULE__, :doc)
-      def unquote(signature), do: unquote(body_block[:do])
+      @docs Map.put(@docs || %{}, {:event_doc, unquote(event)}, doc)
+      def unquote(signature), do: unquote(body[:do])
     end
   end
+
+  # ------------------------- rules: entrée de transition ----------------------
+  @doc """
+  Déclare une transition (état + évènement) contrôlée par un graphe de règles.
+  À l’intérieur : `defrule/2` pour chaque nœud, `defrules_commit/1`, `defrules_exit/4`.
+  """
+  defmacro deftrans_rules({state_ast, _m, [{event_ast, _} | _]} = _sig, do: block) do
+    mod = __CALLER__.module
+    # mark the active ruleset for the block
+    Module.put_attribute(mod, :current_ruleset, {state_ast, event_ast})
+
+    # ensure we have a rules_graph entry to mutate from defrule/2
+    rg = Module.get_attribute(mod, :rules_graph) || %{}
+    Module.put_attribute(mod, :rules_graph, Map.put_new(rg, {state_ast, event_ast}, %{entry: nil, graph: %{}, weights: %{}}))
+
+    quote do
+      unquote(block)
+      # do NOT reset @current_ruleset here — defrules_exit/3 still needs it
+    end
+  end
+
+  # ------------------------------- defrule/2 ----------------------------------
+  @doc """
+  Déclare un nœud de rule (`def rule_name(params) do ... end`).
+  Le corps doit retourner `next_rule({...})` ou `rules_exit(...)`.
+  """
+  defmacro defrule({rule_name, _ctx, _args_ast} = sig, do: body) do
+    mod = __CALLER__.module
+    {st, ev} =
+      Module.get_attribute(mod, :current_ruleset) ||
+        raise(ArgumentError, "defrule must be inside deftrans_rules")
+
+    # find outgoing edges from the rule body
+    nexts = ExFSM.find_next_rules(body)
+
+    # mutate the rules_graph *now* so defrules_commit can see it
+    rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
+    ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
+    graph = Map.put(ruleset.graph || %{}, rule_name, %{next: nexts})
+    rules_graph2 = Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph})
+    Module.put_attribute(mod, :rules_graph, rules_graph2)
+
+    quote do
+      def unquote(sig), do: unquote(body)
+    end
+  end
+
+  # --------------------------- defrules_commit/1 ------------------------------
+  @doc """
+  Clôt le bloc de rules : calcule le point d'entrée si absent, finalise le graphe,
+  et **persiste** @rules_graph dans le module (comme on le fait pour @fsm/@rules_outputs).
+
+  Usage:
+    defrules_commit(entry: :validate, weights: %{reserve: 10})
+  """
+  defmacro defrules_commit(opts \\ []) do
+    mod = __CALLER__.module
+
+    {st, ev} =
+      Module.get_attribute(mod, :current_ruleset) ||
+        raise(ArgumentError, "defrules_commit must be inside deftrans_rules")
+
+    # snapshot des constructions faites par defrule/2
+    rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
+    %{entry: entry0, graph: graph0, weights: weights0} =
+      Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
+
+    user_entry   = Keyword.get(opts, :entry)
+    user_weights = Keyword.get(opts, :weights, weights0 || %{})
+
+    entry =
+      case (user_entry || entry0) do
+        nil -> ExFSM.RuleEngine.infer_entry_rule(graph0)
+        e   -> e
+      end
+
+    if entry == nil do
+      raise ArgumentError,
+            "No entry rule for #{inspect({st, ev})}. " <>
+            "Set @entry_rule or ensure a 'start' node (no predecessors)."
+    end
+
+    # On **persiste** maintenant dans le module via une assignation *dans le quote*.
+    # On escape le graphe pour l’injecter dans l’AST.
+    quote do
+      @rules_graph Map.put(
+        @rules_graph || %{},
+        {unquote(st), unquote(ev)},
+        %{
+          entry:   unquote(entry),
+          graph:   unquote(Macro.escape(graph0)),
+          weights: unquote(Macro.escape(user_weights))
+        }
+      )
+      # On ne reset PAS @current_ruleset ici (defrules_exit va s’en servir).
+      :ok
+    end
+  end
+
+  # ---------------------------- defrules_exit/4 --------------------------------
+  @doc """
+  Épilogue runtime: traduit `acc.exit` en `{:next_state, ...}`.
+  Définit aussi le wrapper de transition qui exécute le RuleEngine.
+  """
+  defmacro defrules_exit(params_ast, state_ast, acc_ast, do: body_ast) do
+    mod = __CALLER__.module
+
+    {st, ev} =
+      Module.get_attribute(mod, :current_ruleset) ||
+        raise(ArgumentError, "defrules_exit must be inside deftrans_rules")
+
+    out_fun = String.to_atom("__rules_exit__#{st}_#{ev}")
+
+    quote do
+      # Make the exit function visible to RuleEngine
+      @rules_outputs Map.put(@rules_outputs || %{}, {unquote(st), unquote(ev)}, unquote(out_fun))
+      # Register this transition in the FSM (fallback @to is honored)
+      @fsm Map.put(@fsm || %{}, {unquote(st), unquote(ev)}, {__MODULE__, @to || []})
+
+      # Reset markers for the next block
+      @current_ruleset nil
+      @to nil
+      @entry_rule nil
+      @weights %{}
+
+      def unquote(out_fun)(unquote(params_ast), unquote(state_ast), unquote(acc_ast)) do
+        unquote(body_ast)
+      end
+
+      def unquote(st)({unquote(ev), params}, state) do
+        ExFSM.RuleEngine.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
+      end
+    end
+  end
+
+  # ---------------------------- AST helpers (public) ---------------------------
+  # Collect next_rule(...) calls from a rule body
+  def find_next_rules({:next_rule, _, [tuple]}) when is_tuple(tuple) do
+    case tuple do
+      {name, _} when is_atom(name) -> [name]
+      _ -> []
+    end
+  end
+  def find_next_rules({_, _, args}) when is_list(args), do: Enum.flat_map(args, &find_next_rules/1)
+  def find_next_rules(list) when is_list(list), do: Enum.flat_map(list, &find_next_rules/1)
+  def find_next_rules(_), do: []
+
+   # Classic introspection
+  def find_nextstates({:{}, _, [:next_state, state | _]}) when is_atom(state), do: [state]
+  def find_nextstates({_, _, asts}), do: find_nextstates(asts)
+  def find_nextstates({_, asts}), do: find_nextstates(asts)
+  def find_nextstates(asts) when is_list(asts), do: Enum.flat_map(asts, &find_nextstates/1)
+  def find_nextstates(_), do: []
 end
 
-# =============================================================================
-# Pipeline engine
-# =============================================================================
+# ============================== RuleEngine ====================================
 
-defmodule ExFSM.V2.Pipeline do
+defmodule ExFSM.RuleEngine do
   @moduledoc false
 
-  @type step_status :: :ok | :warning | :error
-  @type trace_entry :: {step :: atom, status :: :ok | {:error_continue, term} | {:error, term}}
+  @type acc :: %{
+          rules_applied: [map()],
+          exit: any() | nil
+        }
 
-  @doc false
   @spec run(module, {atom, atom}, any, any, keyword) ::
           {:next_state, any}
           | {:next_state, any, non_neg_integer}
-          | {:steps_done, any, any, map}
           | {:error, term}
-          | any
-  def run(mod, {state_name, event}, params, state, opts \\ []) do
-    steps_all = Map.get(mod.pipelines(), {state_name, event}, [])
+  def run(mod, {_st, _ev} = key, params, state, _opts \\ []) do
+    %{entry: entry, graph: graph, weights: weights} =
+      Map.get(mod.rules_graph(), key) ||
+        raise ArgumentError, "No ruleset for #{inspect key}"
 
-    # ---- compute 'steps' (no guards using `in`, no ambiguous do:)
-    steps_opt = Keyword.get(opts, :steps, :all)
+    path = plan_path(graph, weights, entry)
 
-    steps =
-      cond do
-        steps_opt == :all ->
-          steps_all
+    {acc, _last_params} =
+      exec_path(mod, path, params, %{
+        rules_applied: [],
+        exit: nil
+      })
 
-        is_list(steps_opt) ->
-          validate_subset!(steps_opt, steps_all)
-
-        match?({:from, _}, steps_opt) ->
-          {:from, step} = steps_opt
-          if Enum.member?(steps_all, step) do
-            Enum.drop_while(steps_all, &(&1 != step))
-          else
-            raise ArgumentError,
-                  "invalid :steps {:from, #{inspect(step)}} not in pipeline #{inspect(steps_all)}"
-          end
-
-        match?({:until, _}, steps_opt) ->
-          {:until, step} = steps_opt
-          if Enum.member?(steps_all, step) do
-            Enum.take_while(steps_all, &(&1 != step)) ++ [step]
-          else
-            raise ArgumentError,
-                  "invalid :steps {:until, #{inspect(step)}} not in pipeline #{inspect(steps_all)}"
-          end
-
-        match?({:range, _, _}, steps_opt) ->
-          {:range, from, until} = steps_opt
-          if Enum.member?(steps_all, from) and Enum.member?(steps_all, until) do
-            after_from = Enum.drop_while(steps_all, &(&1 != from))
-            Enum.take_while(after_from, &(&1 != until)) ++ [until]
-          else
-            raise ArgumentError,
-                  "invalid :steps {:range, #{inspect(from)}, #{inspect(until)}} not in pipeline #{inspect(steps_all)}"
-          end
-
-        true ->
-          raise ArgumentError, "invalid :steps option: #{inspect(steps_opt)}"
-      end
-
-    params_by_step = Keyword.get(opts, :params_by_step, %{})
-    mode = Keyword.get(opts, :mode, :full)
-    on_error = Keyword.get(opts, :on_error, :halt)
-
-    base_acc = %{
-      status: :ok,
-      steps: [],
-      meta: %{
-        handler: mod,
-        transition: {state_name, event},
-        at: System.system_time(:millisecond)
-      }
-    }
-
-    case mode do
-      :dry_run ->
-        acc = %{base_acc | steps: Enum.map(steps, &{&1, :dry_run})}
-        return_steps_result(mod, {state_name, event}, :dry_run, params, state, acc)
-
-      _ ->
-        {params, state, acc} =
-          Enum.reduce_while(steps, {params, state, base_acc}, fn step, {p, s, a} ->
-            p_step = Map.get(params_by_step, step, p)
-
-            case apply(mod, state_name, [{step, p_step}, s]) do
-              {:ok, p2, s2} ->
-                {:cont, {p2, s2, put_step(a, step, :ok)}}
-
-              {:error_continue, reason, p2, s2} ->
-                {:cont, {p2, s2, put_step(a, step, {:error_continue, reason}) |> warn!()}}
-
-              {:error, reason, p2, s2} ->
-                a2 = put_step(a, step, {:error, reason}) |> error!()
-                if on_error == :continue, do: {:cont, {p2, s2, a2}}, else: {:halt, {p2, s2, a2}}
-
-              other ->
-                raise ArgumentError,
-                      "step #{inspect(step)} returned invalid value: #{inspect(other)}"
-            end
-          end)
-
-        return_steps_result(mod, {state_name, event}, mode, params, state, acc)
-    end
-  end
-
-  # --------- helpers ---------
-
-  defp return_steps_result(_mod, _key, :steps_only, params, state, acc),
-    do: {:steps_done, params, state, acc}
-
-  defp return_steps_result(_mod, _key, :dry_run, params, state, acc),
-    do: {:steps_done, params, state, acc}
-
-  defp return_steps_result(mod, {st, ev}, :full, params, state, acc) do
     out_fun =
-      Map.get(mod.pipeline_outputs(), {st, ev}) ||
-        String.to_atom("__output__#{st}_#{ev}")
+      Map.get(mod.rules_outputs(), key) ||
+        raise ArgumentError, "No rules_exit for #{inspect key}"
 
     apply(mod, out_fun, [params, state, acc])
   end
 
-  defp validate_subset!(list, steps_all) do
-    invalid = list -- steps_all
-    if (invalid != []), do: raise(ArgumentError, "invalid steps: #{inspect(invalid)}")
-    wanted = MapSet.new(list)
-    # keep execution order of pipeline, not user-supplied order
-    Enum.filter(steps_all, &MapSet.member?(wanted, &1))
+  # -------- planner: DFS greedy by weight (fallback: ordre alphabétique) ------
+  defp plan_path(graph, weights, entry) do
+    do_plan(graph, weights, entry, [])
   end
 
-  defp put_step(acc, step, tag), do: %{acc | steps: acc.steps ++ [{step, tag}]}
-  defp warn!(acc), do: %{acc | status: (acc.status == :error && :error) || :warning}
-  defp error!(acc), do: %{acc | status: :error}
+  defp do_plan(graph, weights, rule, acc) do
+    acc2 = acc ++ [rule]
+    links = get_in(graph, [rule, :links]) || []
+
+    case links do
+      [] -> acc2
+      ls ->
+        next =
+          ls
+          |> Enum.sort_by(fn r -> {-Map.get(weights, r, 0), to_string(r)} end)
+          |> List.first()
+
+        do_plan(graph, weights, next, acc2)
+    end
+  end
+
+  # ------------------------------- executor -----------------------------------
+  defp exec_path(mod, [rule | rest], params, acc) do
+    case apply(mod, rule, [params]) do
+      {:__next__, {next, p2}} ->
+        # si l’utilisateur pointe ailleurs que rest[0], on suit sa décision (branch dynamique)
+        exec_path(mod, [next | rest], p2, push(acc, rule, :ok, p2))
+
+      {:__exit__, exit} ->
+        {%{acc | exit: exit} |> push(rule, :exit, params), params}
+
+      other ->
+        raise ArgumentError, "rule #{inspect(rule)} returned invalid value: #{inspect other}"
+    end
+  end
+
+  defp exec_path(_mod, [], params, acc), do: {acc, params}
+
+  defp push(acc, rule, status, params) do
+    step = %{rule: rule, status: status, params: params}
+    %{acc | rules_applied: acc.rules_applied ++ [step]}
+  end
+
+  # Choose a node with no predecessors
+  def infer_entry_rule(graph) when map_size(graph) == 0, do: nil
+  def infer_entry_rule(graph) when is_map(graph) do
+    preds =
+      graph
+      |> Enum.flat_map(fn {_rule, %{next: ns}} -> ns || [] end)
+      |> MapSet.new()
+
+    graph
+    |> Map.keys()
+    |> Enum.find(fn r -> not MapSet.member?(preds, r) end)
+  end
 end
 
-# =============================================================================
-# Machine (glue)
-# =============================================================================
+# ================================= Machine ====================================
 
-defmodule ExFSM.V2.Machine do
+defmodule ExFSM.Machine do
   @moduledoc """
-  Glue layer to use FSMs defined with ExFSM.V2.
+  Glue pour exécuter des transitions rules-based.
+  Supporte un protocole `State` basé sur `handlers(state, params)`.
   """
 
   defprotocol State do
-    @doc "retrieve current state handlers from state object, return [Handler1,Handler2]"
-    def handlers(state)
-    @doc "retrieve current state name from state object"
+    def handlers(state, params)
     def state_name(state)
-    @doc "set new state name"
-    def set_state_name(state, state_name)
+    def set_state_name(state, new_name, possible_handlers)
   end
 
-  @doc "return the FSM as a map of transitions %{{state,action}=>{handler,[dest_states]}} based on handlers"
-  @spec fsm([exfsm_module :: atom]) :: ExFSM.V2.fsm_spec()
-  def fsm(handlers) when is_list(handlers),
-    do: handlers |> Enum.map(& &1.fsm()) |> Enum.concat() |> Enum.into(%{})
+  # Normalize handlers to a list
+  defp to_list(nil), do: []
+  defp to_list(list) when is_list(list), do: list
+  defp to_list(one), do: [one]
 
-  def fsm(state), do: fsm(State.handlers(state))
-
-  def event_bypasses(handlers) when is_list(handlers),
-    do: handlers |> Enum.map(& &1.event_bypasses()) |> Enum.concat() |> Enum.into(%{})
-
-  def event_bypasses(state), do: event_bypasses(State.handlers(state))
-
-  @doc "find the ExFSM.V2 Module from the list `handlers` implementing the event `action` from `state_name`"
-  @spec find_handler({state_name :: atom, event_name :: atom}, [exfsm_module :: atom]) ::
-          exfsm_module :: atom | nil
-  def find_handler({state_name, action}, handlers) when is_list(handlers) do
-    case Map.get(fsm(handlers), {state_name, action}) do
-      {handler, _} -> handler
-      _ -> nil
-    end
+  # Maps of transitions/bypasses for a list of handlers
+  defp transition_map(handlers, method) do
+    handlers
+    |> Enum.map(&apply(&1, method, []))
+    |> Enum.concat()
+    |> Enum.into(%{})
   end
 
-  @doc "same as `find_handler/2` but using a 'meta' state implementing `ExFSM.V2.Machine.State`"
-  def find_handler({state, action}),
-    do: find_handler({State.state_name(state), action}, State.handlers(state))
-
-  def find_bypass(handlers_or_state, action) do
-    event_bypasses(handlers_or_state)[action]
-  end
-
-  def infos(handlers, _action) when is_list(handlers) do
-    handlers |> Enum.map(& &1.docs()) |> Enum.concat() |> Enum.into(%{})
-  end
-
-  def infos(state, action), do: infos(State.handlers(state), action)
-
-  def find_info(state, action) do
-    docs = infos(state, action)
-
-    if doc = docs[{:transition_doc, State.state_name(state), action}] do
-      {:known_transition, doc}
-    else
-      {:bypass, docs[{:event_doc, action}]}
-    end
-  end
+  def fsm(handlers) when is_list(handlers), do: transition_map(handlers, :fsm)
+  def event_bypasses(handlers) when is_list(handlers), do: transition_map(handlers, :event_bypasses)
 
   @doc """
-  Apply a transition using the handler resolved from the state's handlers.
+  Applique un évènement {action, params} sur l’état (résout handler, route bypass/transition).
   """
-  @type meta_event_reply ::
-          {:next_state, ExFSM.V2.Machine.State.t()}
-          | {:next_state, ExFSM.V2.Machine.State.t(), timeout :: integer}
-          | {:error, :illegal_action}
-  @spec event(ExFSM.V2.Machine.State.t(), {event_name :: atom, event_params :: any}) ::
-          meta_event_reply
   def event(state, {action, params}) do
-    case find_handler({state, action}) do
-      nil ->
-        case find_bypass(state, action) do
-          nil ->
-            {:error, :illegal_action}
+      case find_handlers({state, action, params}) do
+        [handler | _] ->
+          case apply(handler, State.state_name(state), [{action, params}, state]) do
+            {:next_state, state_name, state2, timeout} ->
+              {:next_state, State.set_state_name(state2, state_name, to_list(State.handlers(state, params))), timeout}
 
-          handler ->
-            case apply(handler, action, [params, state]) do
-              {:keep_state, state} ->
-                {:next_state, state}
+            {:next_state, state_name, state2} ->
+              {:next_state, State.set_state_name(state2, state_name, to_list(State.handlers(state, params)))}
 
-              {:next_state, state_name, state, timeout} ->
-                {:next_state, State.set_state_name(state, state_name), timeout}
+            other ->
+              other
+          end
 
-              {:next_state, state_name, state} ->
-                {:next_state, State.set_state_name(state, state_name)}
+        [] ->
+          case find_bypasses({state, action, params}) do
+            [handler | _] ->
+              case apply(handler, action, [params, state]) do
+                {:keep_state, state2} ->
+                  {:next_state, state2}
 
-              other ->
-                other
-            end
-        end
+                {:next_state, state_name, state2, timeout} ->
+                  {:next_state, State.set_state_name(state2, state_name, to_list(State.handlers(state, params))), timeout}
 
-      handler ->
-        case apply(handler, State.state_name(state), [{action, params}, state]) do
-          {:next_state, state_name, state, timeout} ->
-            {:next_state, State.set_state_name(state, state_name), timeout}
+                {:next_state, state_name, state2} ->
+                  {:next_state, State.set_state_name(state2, state_name, to_list(State.handlers(state, params)))}
 
-          {:next_state, state_name, state} ->
-            {:next_state, State.set_state_name(state, state_name)}
+                other ->
+                  other
+              end
 
-          other ->
-            other
-        end
-    end
+            _ ->
+              {:error, :illegal_action}
+          end
+      end
   end
 
-  @spec available_actions(ExFSM.V2.Machine.State.t()) :: [action_name :: atom]
-  def available_actions(state) do
+  # available_actions — both arities for compatibility
+  def available_actions({state, params}) do
+    handlers = to_list(State.handlers(state, params))
+
     fsm_actions =
-      ExFSM.V2.Machine.fsm(state)
+      fsm(handlers)
       |> Enum.filter(fn {{from, _}, _} -> from == State.state_name(state) end)
       |> Enum.map(fn {{_, action}, _} -> action end)
 
-    bypasses_actions = ExFSM.V2.Machine.event_bypasses(state) |> Map.keys()
-    Enum.uniq(fsm_actions ++ bypasses_actions)
+    bypass_actions =
+      event_bypasses(handlers)
+      |> Map.keys()
+
+    Enum.uniq(fsm_actions ++ bypass_actions)
   end
 
-  @spec action_available?(ExFSM.V2.Machine.State.t(), action_name :: atom) :: boolean
-  def action_available?(state, action) do
-    action in available_actions(state)
-  end
-
-  # ---------------------------------------------------------------------------
-  # Replay / Planning
-  # ---------------------------------------------------------------------------
-
-  @doc """
-  Rejoue une transition précise `{state_name, event}` avec options:
-    - :steps -> :all | [:step] | {:from, s} | {:until, s} | {:range, s1, s2}
-    - :mode  -> :full | :steps_only | :dry_run
-    - :params -> base params
-    - :params_by_step -> %{step => params_override}
-    - :on_error -> :halt | :continue
-  """
-  @spec retry(any, atom, keyword) ::
-          {:steps_done, any, any, map}
-          | {:next_state, any}
-          | {:next_state, any, non_neg_integer}
-          | {:error, :illegal_action | {:invalid_steps, [atom]}}
-  def retry(state, event, opts \\ []) do
-    handlers = State.handlers(state)
-    state_name = State.state_name()
-
-    case find_handler({state_name, event}, handlers) do
-      nil ->
-        {:error, :illegal_action}
-
-      mod ->
-        steps_all = mod.pipelines()[{state_name, event}] || []
-
-        with :ok <- validate_steps_opt(Keyword.get(opts, :steps, :all), steps_all) do
-          params = Keyword.get(opts, :params, %{})
-          ExFSM.V2.Pipeline.run(mod, {state_name, event}, params, state, opts)
-        else
-          {:error, invalid} -> {:error, {:invalid_steps, invalid}}
-        end
+# Find handler(s) for a given (state_name, action)
+  def find_handlers({state_name, action}, handlers) when is_list(handlers) do
+    case Map.get(fsm(handlers), {state_name, action}) do
+      {h, _} -> [h]
+      list when is_list(list) -> list
+      _ -> []
     end
   end
 
-  defp validate_steps_opt(:all, _), do: :ok
-
-  defp validate_steps_opt(list, steps_all) when is_list(list) do
-    invalid = list -- steps_all
-    if invalid == [], do: :ok, else: {:error, invalid}
+  # Param-aware handler resolution
+  def find_handlers({state, action, params}) do
+    handlers = to_list(State.handlers(state, params))
+    find_handlers({State.state_name(state), action}, handlers)
   end
 
-  defp validate_steps_opt({:from, s}, steps_all) do
-    if Enum.member?(steps_all, s), do: :ok, else: {:error, [{:from, s}]}
-  end
-
-  defp validate_steps_opt({:until, s}, steps_all) do
-    if Enum.member?(steps_all, s), do: :ok, else: {:error, [{:until, s}]}
-  end
-
-  defp validate_steps_opt({:range, a, b}, steps_all) do
-    cond do
-      Enum.member?(steps_all, a) and Enum.member?(steps_all, b) -> :ok
-      true -> {:error, [{:range, a, b}]}
-    end
-  end
-
-  defp validate_steps_opt(other, _), do: {:error, [other]}
-
-  @doc """
-  Steps restants (non-:ok) pour `{state_name, event}` d'un `state`.
-  Si le handler a changé entre `acc` et l'état courant, renvoie
-  `{:handler_changed, current, expected, steps}`.
-  """
-  @spec remaining_steps(any, atom, map | nil) ::
-          {:ok, [atom]} | {:handler_changed, module, module, [atom]} | {:error, :illegal_action}
-  def remaining_steps(state, event, acc \\ nil) do
-    handlers = State.handlers(state)
-    state_name = State.state_name()
-
-    case find_handler({state_name, event}, handlers) do
-      nil ->
-        {:error, :illegal_action}
-
-      mod ->
-        steps = mod.pipelines()[{state_name, event}] || []
-
-        case acc do
-          %{meta: %{handler: expected}} when expected != mod ->
-            {:handler_changed, mod, expected, steps}
-
-          %{steps: trace} ->
-            done = for {step, :ok} <- trace, do: step
-            {:ok, Enum.reject(steps, &(&1 in done))}
-
-          _ ->
-            {:ok, steps}
-        end
-    end
-  end
-
-  @doc """
-  Plan de rejeu = steps restants + handler + transition.
-  """
-  @spec replay_plan(any, atom, map | nil) ::
-          {:ok, %{steps: [atom], handler: module, transition: {atom, atom}}}
-          | {:handler_changed, module, module, [atom]}
-          | {:error, :illegal_action}
-  def replay_plan(state, event, acc \\ nil) do
-    state_name = State.state_name()
-    case remaining_steps(state, {state_name, event}, acc) do
-      {:ok, steps} ->
-        {:ok,
-         %{
-           steps: steps,
-           handler: find_handler({state_name, event}, State.handlers(state)),
-           transition: {state_name, event}
-         }}
-
-      other ->
-        other
+  def find_bypasses({state, action, params}) do
+    handlers = to_list(State.handlers(state, params))
+    case Map.get(event_bypasses(handlers), action) do
+      nil -> []
+      h when is_list(h) -> h
+      h -> [h]
     end
   end
 end

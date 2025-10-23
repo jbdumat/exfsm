@@ -3,7 +3,7 @@ defmodule ExFSM.V2.Mixfile do
 
   def project do
     [
-      app: :exfsm_v2,
+      app: :exfsm,
       version: "0.1.6",
       elixir:
         if Mix.env() == :dev do
@@ -30,6 +30,8 @@ defmodule ExFSM.V2.Mixfile do
           "Doc" => "http://hexdocs.pm/exfsm"
         }
       ],
+      test_coverage: [tool: ExCoveralls],
+      preferred_cli_env: [coveralls: :test],
       deps: [
         {:ex_doc, ">= 0.0.0", only: :dev}
       ]
