@@ -29,6 +29,13 @@ defmodule ExFSM do
       @entry_rule nil       # override possible dans un bloc
       @weights %{}          # weights optionnels par règle
 
+      # ---- helpers rules (taggable next) ----
+      def next_rule({rule, params}), do: {:__next__, {rule, params}, :ok}
+      def next_ok({rule, params}),   do: {:__next__, {rule, params}, :ok}
+      def next_warn({rule, params}), do: {:__next__, {rule, params}, :warn}
+      def next_error({rule, params}), do: {:__next__, {rule, params}, :error}
+      def rules_exit(params), do: {:__exit__, params}
+
       @before_compile ExFSM
     end
   end
@@ -44,8 +51,6 @@ defmodule ExFSM do
   end
 
   # ------------- helpers visibles depuis les modules utilisateurs -------------
-  def next_rule({rule, params}), do: {:__next__, {rule, params}}
-  def rules_exit(exit), do: {:__exit__, exit}
   def dbg(mod, tag, attr) do
     IO.inspect(Module.get_attribute(mod, attr), label: "#{tag}")
   end
@@ -146,13 +151,19 @@ defmodule ExFSM do
       Module.get_attribute(mod, :current_ruleset) ||
         raise(ArgumentError, "defrules_commit must be inside deftrans_rules")
 
-    # snapshot des constructions faites par defrule/2
     rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
     %{entry: entry0, graph: graph0, weights: weights0} =
       Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
 
-    user_entry   = Keyword.get(opts, :entry)
-    user_weights = Keyword.get(opts, :weights, weights0 || %{})
+    {opts_term, _} = Code.eval_quoted(opts, [], __CALLER__)
+    user_entry = opts_term[:entry] || entry0
+    user_weights =
+      case opts_term[:weights] do
+        nil -> (weights0 || %{})
+        m when is_map(m) -> m
+        kw when is_list(kw) -> Map.new(kw)
+        _ -> %{}
+      end
 
     entry =
       case (user_entry || entry0) do
@@ -163,22 +174,23 @@ defmodule ExFSM do
     if entry == nil do
       raise ArgumentError,
             "No entry rule for #{inspect({st, ev})}. " <>
-            "Set @entry_rule or ensure a 'start' node (no predecessors)."
+            "Set entry: ... or ensure a start node (no predecessors)."
     end
 
-    # On **persiste** maintenant dans le module via une assignation *dans le quote*.
-    # On escape le graphe pour l’injecter dans l’AST.
+    # Snapshot -> inject literal in the compiled module
+    graph_lit   = Macro.escape(graph0)
+    weights_lit = Macro.escape(user_weights)
+
     quote do
       @rules_graph Map.put(
         @rules_graph || %{},
         {unquote(st), unquote(ev)},
         %{
-          entry:   unquote(entry),
-          graph:   unquote(Macro.escape(graph0)),
+          entry: unquote(entry),
+          graph: unquote(Macro.escape(graph0)),
           weights: unquote(Macro.escape(user_weights))
         }
       )
-      # On ne reset PAS @current_ruleset ici (defrules_exit va s’en servir).
       :ok
     end
   end
@@ -220,16 +232,39 @@ defmodule ExFSM do
   end
 
   # ---------------------------- AST helpers (public) ---------------------------
-  # Collect next_rule(...) calls from a rule body
-  def find_next_rules({:next_rule, _, [tuple]}) when is_tuple(tuple) do
-    case tuple do
-      {name, _} when is_atom(name) -> [name]
-      _ -> []
+  def find_next_rules(ast) do
+    {_, acc} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {:next_rule, _, [arg]} = node, acc ->
+          {node, maybe_put_rule(acc, arg)}
+
+        {:next_ok, _, [arg]} = node, acc ->
+          {node, maybe_put_rule(acc, arg)}
+
+        {:next_warn, _, [arg | _]} = node, acc ->
+          {node, maybe_put_rule(acc, arg)}
+
+        {:next_error, _, [arg | _]} = node, acc ->
+          {node, maybe_put_rule(acc, arg)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    MapSet.to_list(acc)
+  end
+
+  defp maybe_put_rule(acc, {name, _}) when is_atom(name), do: MapSet.put(acc, name)
+
+  defp maybe_put_rule(acc, kw) when is_list(kw) and kw != [] do
+    # handle keyword form: next_ok reserve: p
+    case kw do
+      [{name, _}] when is_atom(name) -> MapSet.put(acc, name)
+      _ -> acc
     end
   end
-  def find_next_rules({_, _, args}) when is_list(args), do: Enum.flat_map(args, &find_next_rules/1)
-  def find_next_rules(list) when is_list(list), do: Enum.flat_map(list, &find_next_rules/1)
-  def find_next_rules(_), do: []
+
+  defp maybe_put_rule(acc, _), do: acc
 
    # Classic introspection
   def find_nextstates({:{}, _, [:next_state, state | _]}) when is_atom(state), do: [state]
@@ -244,45 +279,99 @@ end
 defmodule ExFSM.RuleEngine do
   @moduledoc false
 
+  @type tag :: :ok | {:warn, any} | {:error, any} | :exit
+  @type step :: %{
+          rule: atom(),
+          tag: tag(),
+          in: any(),
+          out: any() | nil,
+          time: non_neg_integer(),
+        }
   @type acc :: %{
-          rules_applied: [map()],
-          exit: any() | nil
+          rules_applied: [step],
+          exit: any() | nil,
+          plan: [atom()],
+          chosen: [atom()]
         }
 
+  @doc """
+  Exécute la transition {state,event}.
+  Options possibles :
+    - mode: :full | :steps_only | :dry_run   (par défaut :full – dry_run est à relayer dans tes rules)
+    - params_override: %{rule => params}     (remplace les params au passage d'une rule)
+  """
   @spec run(module, {atom, atom}, any, any, keyword) ::
           {:next_state, any}
           | {:next_state, any, non_neg_integer}
+          | {:steps_done, any, any, acc}
           | {:error, term}
-  def run(mod, {_st, _ev} = key, params, state, _opts \\ []) do
+  def run(mod, {_st, _ev} = key, params, state, opts \\ []) do
+    %{entry: entry, graph: graph, weights: weights0} =
+      Map.get(mod.rules_graph(), key) ||
+        raise(ArgumentError, "No ruleset for #{inspect(key)}")
+
+    weights = normalize_weights(weights0)
+    path = plan_path(graph, weights, entry)
+    params_override = Keyword.get(opts, :params_override, %{})
+    mode = Keyword.get(opts, :mode, :full)
+
+    {acc, params2, halted?} = exec_path(mod, path, params, %{rules_applied: [], exit: nil}, params_override, mode)
+
+    case mode do
+      :steps_only ->
+        {:steps_done, params2, state, acc}
+
+      _ ->
+        out_fun =
+          Map.get(mod.rules_outputs(), key) ||
+            raise ArgumentError, "No rules_exit for #{inspect key}"
+
+        apply(mod, out_fun, [params, state, acc])
+    end
+  end
+
+  # ---- runtime normalization helpers ----------------------------------------
+  defp normalize_weights(w) when is_map(w), do: w
+  defp normalize_weights(w) when is_list(w), do: Map.new(w)
+  defp normalize_weights(_), do: %{}
+
+  # ------------------------------ Planner -------------------------------------
+
+  @doc """
+  Renvoie le plan nominal (liste ordonnée de rules) calculé en DFS glouton par poids.
+  """
+  @spec plan(module, {atom, atom}) :: [atom]
+  def plan(mod, key = {st, ev}) do
     %{entry: entry, graph: graph, weights: weights} =
       Map.get(mod.rules_graph(), key) ||
         raise ArgumentError, "No ruleset for #{inspect key}"
 
-    path = plan_path(graph, weights, entry)
-
-    {acc, _last_params} =
-      exec_path(mod, path, params, %{
-        rules_applied: [],
-        exit: nil
-      })
-
-    out_fun =
-      Map.get(mod.rules_outputs(), key) ||
-        raise ArgumentError, "No rules_exit for #{inspect key}"
-
-    apply(mod, out_fun, [params, state, acc])
+    plan_path(graph, weights, entry)
   end
 
-  # -------- planner: DFS greedy by weight (fallback: ordre alphabétique) ------
+  @doc """
+  Dry-run structurel : ne touche pas aux rules, renvoie seulement plan, graph et entry.
+  """
+  @spec dry_run(module, {atom, atom}) :: {:ok, %{plan: [atom], graph: map, entry: atom}}
+  def dry_run(mod, key) do
+    %{entry: entry, graph: graph, weights: weights} =
+      Map.get(mod.rules_graph(), key) ||
+        raise ArgumentError, "No ruleset for #{inspect key}"
+
+    {:ok, %{plan: plan_path(graph, weights, entry), graph: graph, entry: entry}}
+  end
+
   defp plan_path(graph, weights, entry) do
     do_plan(graph, weights, entry, [])
   end
 
+  defp do_plan(_graph, _weights, nil, acc), do: Enum.reverse(acc)
   defp do_plan(graph, weights, rule, acc) do
     acc2 = acc ++ [rule]
-    links = get_in(graph, [rule, :links]) || []
+    # AVANT: links = get_in(graph, [rule, :links]) || []
+    nexts = get_in(graph, [rule, :next]) || []
 
-    case links do
+    case nexts do
       [] -> acc2
       ls ->
         next =
@@ -294,26 +383,43 @@ defmodule ExFSM.RuleEngine do
     end
   end
 
-  # ------------------------------- executor -----------------------------------
-  defp exec_path(mod, [rule | rest], params, acc) do
-    case apply(mod, rule, [params]) do
-      {:__next__, {next, p2}} ->
-        # si l’utilisateur pointe ailleurs que rest[0], on suit sa décision (branch dynamique)
-        exec_path(mod, [next | rest], p2, push(acc, rule, :ok, p2))
+  # ------------------------------ Executor ------------------------------------
+  defp push(acc, rule, tag, params, opts \\ []) do
+    step =
+      %{rule: rule, tag: tag, params: params}
+      |> maybe_put(:chosen, Keyword.get(opts, :chosen))
 
-      {:__exit__, exit} ->
-        {%{acc | exit: exit} |> push(rule, :exit, params), params}
-
-      other ->
-        raise ArgumentError, "rule #{inspect(rule)} returned invalid value: #{inspect other}"
-    end
+    %{acc | rules_applied: acc.rules_applied ++ [step]}
   end
 
-  defp exec_path(_mod, [], params, acc), do: {acc, params}
+  defp maybe_put(map, _k, nil), do: map
+  defp maybe_put(map, k, v),   do: Map.put(map, k, v)
 
-  defp push(acc, rule, status, params) do
-    step = %{rule: rule, status: status, params: params}
-    %{acc | rules_applied: acc.rules_applied ++ [step]}
+  defp exec_path(_mod, [], params, acc, _ovr, _mode), do: {acc, params, false}
+  defp exec_path(mod, [rule | rest], params, acc, ovr, mode) do
+    p_step = Map.get(ovr, rule, params)
+
+    case apply(mod, rule, [p_step]) do
+      {:__next__, {next, p2}} ->
+        acc2 = push(acc, rule, :ok, p2, chosen: next)
+        exec_path(mod, [next | rest], p2, acc2, ovr, mode)
+
+      {:__next__, {next, p2}, :ok} ->
+        acc2 = push(acc, rule, :ok, p2, chosen: next)
+        exec_path(mod, [next | rest], p2, acc2, ovr, mode)
+
+      {:__next__, {next, p2}, tag} when tag in [:warn, :error] ->
+        acc2 = push(acc, rule, tag, p2, chosen: next)
+        if mode == :steps_only, do: {acc2, p2, true}, else: exec_path(mod, [next | rest], p2, acc2, ovr, mode)
+
+      {:__exit__, exit} ->
+        if mode == :steps_only do
+          {acc, params, true}
+        else
+          acc2 = push(acc, rule, :exit, params)
+          {%{acc2 | exit: exit}, params, true}
+        end
+    end
   end
 
   # Choose a node with no predecessors
@@ -328,7 +434,107 @@ defmodule ExFSM.RuleEngine do
     |> Map.keys()
     |> Enum.find(fn r -> not MapSet.member?(preds, r) end)
   end
+
+  # ----------------------------- Remaining ------------------------------------
+
+  def plan_from(mod, {st, ev}, from_rule) do
+    %{graph: graph, weights: weights0} =
+      Map.get(mod.rules_graph(), {st, ev}) ||
+        raise ArgumentError, "No ruleset for #{inspect {st,ev}}"
+
+    weights = normalize_weights(weights0)
+    do_plan(graph, weights, from_rule, [])
+  end
+
+  @doc """
+  Steps “restants” selon le plan nominal (plan – rules :ok déjà passées).
+  """
+  def remaining_rules(state, {st, ev} = key, rules_applied) do
+    # 1/ resolve handler pour être sûr du module
+    handler =
+      ExFSM.Machine.find_handlers({state, ev, %{}}) |> List.first() ||
+        raise ArgumentError, "No handler for #{inspect key}"
+
+    # 3/ Si aucune règle exécutée : plan complet depuis l'entry
+    case rules_applied do
+      [] ->
+        %{entry: entry} = Map.fetch!(handler.rules_graph(), key)
+        plan_from(handler, key, entry)
+
+      applied when is_list(applied) ->
+        # Dernière règle « réussie » (ok/warn) — on tolère warn comme progression
+        last =
+          applied
+          |> Enum.reverse()
+          |> Enum.find(fn e -> e.tag in [:ok, :warn] end)
+
+        cond do
+          is_nil(last) ->
+            # Seules des erreurs/exit : on repart de l’entry
+            %{entry: entry} = Map.fetch!(handler.rules_graph(), key)
+            plan_from(handler, key, entry)
+
+          true ->
+            # Si le step a un chosen, on repart de ce chosen
+            from_rule = last[:chosen] || last[:rule]
+            full = plan_from(handler, key, from_rule)
+
+            # Éliminer les nodes déjà "ok/warn" après ce point
+            done_ok =
+              applied
+              |> Enum.filter(&(&1.tag in [:ok, :warn]))
+              |> Enum.map(& &1.rule)
+              |> MapSet.new()
+
+            Enum.reject(full, &MapSet.member?(done_ok, &1))
+        end
+    end
+  end
+
+  # ------------------------------ Replay --------------------------------------
+
+  # @spec replay(any, {atom, atom}, map, map, atom) ::
+  #         {:ok, map} | {:next_state, any} | {:next_state, any, non_neg_integer} | {:error, term}
+  def replay(state, {st, ev} = key, params_override \\ %{}, acc, mode \\ :full) do
+    handler =
+      ExFSM.Machine.find_handlers({state, ev, %{}}) |> List.first() ||
+        raise ArgumentError, "No handler for #{inspect key}"
+
+    remaining = remaining_rules(state, key, acc[:rules_applied])
+    # Paramètre de départ : si on a un dernier step, reprend ses params,
+    # sinon laisse le call-site fournir ses params à run/5 s’il préfère.
+    base_params =
+      acc[:rules_applied]
+      |> List.last()
+      |> case do
+        %{params: p} -> p
+        _ -> %{}
+      end
+
+      {acc2, _params2, _halted?} = exec_path(handler, remaining, base_params, acc, params_override, mode)
+
+    if mode == :steps_only do
+      {:ok, acc2}
+    else
+      out_fun =
+        Map.get(handler.rules_outputs(), key) ||
+          raise ArgumentError, "No rules_exit for #{inspect key}"
+
+      # NB: ici, on ne change pas l’état — on délègue à defrules_exit/3
+      case apply(handler, out_fun, [base_params, state, acc2]) do
+        {:next_state, state_name, state2, timeout} ->
+            {:next_state, ExFSM.Machine.State.set_state_name(state2, state_name, ExFSM.Machine.to_list(ExFSM.Machine.State.handlers(state, base_params))), timeout}
+
+        {:next_state, state_name, state2} ->
+            {:next_state, ExFSM.Machine.State.set_state_name(state2, state_name, ExFSM.Machine.to_list(ExFSM.Machine.State.handlers(state, base_params)))}
+
+        other ->
+            other
+      end
+    end
+  end
 end
+
 
 # ================================= Machine ====================================
 
@@ -345,9 +551,9 @@ defmodule ExFSM.Machine do
   end
 
   # Normalize handlers to a list
-  defp to_list(nil), do: []
-  defp to_list(list) when is_list(list), do: list
-  defp to_list(one), do: [one]
+  def to_list(nil), do: []
+  def to_list(list) when is_list(list), do: list
+  def to_list(one), do: [one]
 
   # Maps of transitions/bypasses for a list of handlers
   defp transition_map(handlers, method) do
