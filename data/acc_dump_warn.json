@@ -1,0 +1,74 @@
+{
+  "steps": [
+    {
+      "time_ms": 0,
+      "tag": "error",
+      "rule": "err_early",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "err_early"
+          ],
+          "__state__": "init"
+        },
+        "params": {
+          "path": "error_path"
+        }
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a"
+          ],
+          "__state__": "init"
+        },
+        "params": {
+          "path": "error_path"
+        }
+      },
+      "chosen": "exit"
+    },
+    {
+      "time_ms": 0,
+      "tag": "error",
+      "rule": "a",
+      "out": {
+        "state": {
+          "seq": [
+            "a"
+          ],
+          "__state__": "init"
+        },
+        "params": {
+          "path": "error_path"
+        }
+      },
+      "in": {
+        "state": {
+          "__state__": "init"
+        },
+        "params": {
+          "path": "error_path"
+        }
+      },
+      "chosen": "err_early"
+    }
+  ],
+  "state": {
+    "seq": [
+      "a",
+      "err_early"
+    ],
+    "__state__": "init"
+  },
+  "params": {
+    "path": "error_path"
+  },
+  "exit": [
+    "error",
+    {
+      "error": "early"
+    }
+  ]
+}

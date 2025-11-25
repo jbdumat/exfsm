@@ -19,7 +19,8 @@ defmodule ExFSM.Meta do
   end
 
   @spec get() :: t
-  def get, do: Process.get(@key) || %{initial_state: nil, initial_params: %{}, acc: %Acc{}, delta: %{}}
+  def get,
+    do: Process.get(@key) || %{initial_state: nil, initial_params: %{}, acc: %Acc{}, delta: %{}}
 
   @spec put(t) :: :ok
   def put(m) when is_map(m), do: Process.put(@key, m) && :ok

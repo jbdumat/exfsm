@@ -1,0 +1,321 @@
+{
+  "steps": [
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "z_ok",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t",
+            "v",
+            "y",
+            "z_ok"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t",
+            "v",
+            "y"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "chosen": "exit"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "y",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t",
+            "v",
+            "y"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t",
+            "v"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "chosen": "z_ok"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "v",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t",
+            "v"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "chosen": "y"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "t",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s",
+            "t"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "chosen": "v"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "s",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r",
+            "s"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "chosen": "t"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "r",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p",
+            "r"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p"
+          ],
+          "__state__": "review"
+        },
+        "params": {}
+      },
+      "chosen": "s"
+    }
+  ],
+  "state": {
+    "seq": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "g",
+      "i",
+      "j",
+      "m",
+      "p",
+      "r",
+      "s",
+      "t",
+      "v",
+      "y",
+      "z_ok"
+    ],
+    "__state__": "review"
+  },
+  "params": {},
+  "meta": {},
+  "exit": [
+    "ok",
+    {
+      "review": "ok"
+    }
+  ]
+}

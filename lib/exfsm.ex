@@ -16,24 +16,7 @@ defmodule ExFSM do
 
   defmacro __using__(_opts) do
     quote do
-      import ExFSM, only: [
-        # blocs
-        deftrans_rules: 2,
-        defrule: 2, defrule: 4,
-        defrules_commit: 1,
-        defrules_exit: 4,    # (new_params, new_state_flow, proposed) do ... end
-
-        # sucres (macros + fonctions) — IMPORTER TOUTES LES ARITÉS NÉCESSAIRES
-        next_rule: 2,        # si tu as aussi une variante /3, ajoute-la ici
-        rules_exit: 2, rules_exit: 3, rules_exit: 4,
-        next_ok: 3, next_ok: 4,
-        next_exit: 3, next_exit: 4,
-        next_warn: 3,
-        next_error: 3,
-
-        # meta helpers
-        meta: 0
-      ]
+      import ExFSM
 
       @fsm %{}
       @docs %{}
@@ -51,6 +34,7 @@ defmodule ExFSM do
 
   defmacro __before_compile__(_env) do
     quote do
+
       def fsm, do: @fsm || %{}
       def docs, do: @docs || %{}
       def event_bypasses, do: @bypasses || %{}
@@ -85,17 +69,20 @@ defmodule ExFSM do
     {rule_ast, params_ast, state_ast} =
       case arg_ast do
         # {:rule, params, state}
-        {:{}, _, [r_ast, p_ast, s_ast]} -> {r_ast, p_ast, s_ast}
+        {:{}, _, [r_ast, p_ast, s_ast]} ->
+          {r_ast, p_ast, s_ast}
 
         # {:rule, params}
-        {:{}, _, [r_ast, p_ast]} -> {r_ast, p_ast, Macro.var(:state, nil)}
+        {:{}, _, [r_ast, p_ast]} ->
+          {r_ast, p_ast, Macro.var(:state, nil)}
 
         # forme keyword [rule: params]
         [{r_atom, p_ast}] when is_atom(r_atom) ->
           {r_atom, p_ast, Macro.var(:state, nil)}
 
         # tuple “plat” {rule, params, state}
-        {r_ast, p_ast, s_ast} -> {r_ast, p_ast, s_ast}
+        {r_ast, p_ast, s_ast} ->
+          {r_ast, p_ast, s_ast}
 
         other ->
           raise ArgumentError,
@@ -112,13 +99,15 @@ defmodule ExFSM do
   #                        state_override \\ var!(state),
   #                        tag \\ :ok)
   # ------------------------------------------------------
-  defmacro rules_exit(payload_ast, params_override_ast \\ nil, state_override_ast \\ nil, tag_ast \\ :ok) do
+  defmacro rules_exit(
+             payload_ast,
+             params_override_ast \\ nil,
+             state_override_ast \\ nil,
+             tag_ast \\ :ok
+           ) do
     quote do
-      {:__exit__,
-      unquote(payload_ast),
-      (unquote(params_override_ast) || var!(params)),
-      (unquote(state_override_ast) || var!(state)),
-      unquote(tag_ast)}
+      {:__exit__, unquote(payload_ast), unquote(params_override_ast) || var!(params),
+       unquote(state_override_ast) || var!(state), unquote(tag_ast)}
     end
   end
 
@@ -229,7 +218,11 @@ defmodule ExFSM do
     ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
     graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
 
-    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
+    Module.put_attribute(
+      mod,
+      :rules_graph,
+      Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph})
+    )
 
     fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
 
@@ -269,14 +262,16 @@ defmodule ExFSM do
         raise(ArgumentError, "defrules_commit must be inside deftrans_rules")
 
     rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
+
     %{entry: entry0, graph: graph0, weights: weights0} =
       Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
 
     {opts_term, _} = Code.eval_quoted(opts, [], __CALLER__)
-    user_entry   = opts_term[:entry]   || entry0
+    user_entry = opts_term[:entry] || entry0
+
     user_weights =
       case opts_term[:weights] do
-        nil -> (weights0 || %{})
+        nil -> weights0 || %{}
         m when is_map(m) -> m
         kw when is_list(kw) -> Map.new(kw)
         _ -> %{}
@@ -284,33 +279,32 @@ defmodule ExFSM do
 
     # Si pas d'entry explicit, on l’infère depuis le graphe
     entry =
-      case (user_entry || entry0) do
+      case user_entry || entry0 do
         nil -> infer_entry_rule(graph0)
-        e   -> e
+        e -> e
       end
 
     if entry == nil do
       raise ArgumentError,
             "No entry rule for #{inspect({st, ev})}. " <>
-            "Set entry: ... or ensure a start node (no predecessors)."
+              "Set entry: ... or ensure a start node (no predecessors)."
     end
 
     quote do
       # Persiste le graphe/poids/entry pour introspection
       @rules_graph Map.put(
-        @rules_graph || %{},
-        {unquote(st), unquote(ev)},
-        %{
-          entry:   unquote(entry),
-          graph:   unquote(Macro.escape(graph0)),
-          weights: unquote(Macro.escape(user_weights))
-        }
-      )
+                     @rules_graph || %{},
+                     {unquote(st), unquote(ev)},
+                     %{
+                       entry: unquote(entry),
+                       graph: unquote(Macro.escape(graph0)),
+                       weights: unquote(Macro.escape(user_weights))
+                     }
+                   )
       def __rules_entry__({unquote(st), unquote(ev)}), do: unquote(entry)
       :ok
     end
   end
-
 
   # ---------------------------- defrules_exit/2 --------------------------------
   @doc """
@@ -390,8 +384,10 @@ defmodule ExFSM do
     do: MapSet.put(acc, rule_ast)
 
   defp put_next_from_rule_atom(acc, {:|>, _, _} = _pipe), do: acc
+
   defp put_next_from_rule_atom(acc, {name, _, _ctx}) when is_atom(name),
     do: MapSet.put(acc, name)
+
   defp put_next_from_rule_atom(acc, _), do: acc
 
   # {:rule, params} | {:rule, params, state} | [rule: params]

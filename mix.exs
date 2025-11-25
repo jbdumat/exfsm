@@ -33,6 +33,7 @@ defmodule ExFSM.V2.Mixfile do
       test_coverage: [tool: ExCoveralls],
       preferred_cli_env: [coveralls: :test],
       deps: [
+        {:poison, "~> 6.0"},
         {:ex_doc, ">= 0.0.0", only: :dev}
       ]
     ]
