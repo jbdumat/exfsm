@@ -6,8 +6,6 @@ defmodule ExFSM.Machine do
   Supporte un protocole `State` basé sur `handlers(state, params)`.
   """
 
-  require Logger
-
   defprotocol State do
     def handlers(state, params)
     def state_name(state)

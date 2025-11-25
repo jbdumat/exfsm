@@ -35,11 +35,11 @@ defmodule ExFSM do
   defmacro __before_compile__(_env) do
     quote do
 
-      def fsm, do: @fsm || %{}
-      def docs, do: @docs || %{}
-      def event_bypasses, do: @bypasses || %{}
-      def rules_graph, do: @rules_graph || %{}
-      def rules_outputs, do: @rules_outputs || %{}
+      def fsm, do: @fsm
+      def docs, do: @docs
+      def event_bypasses, do: @bypasses
+      def rules_graph, do: @rules_graph
+      def rules_outputs, do: @rules_outputs
     end
   end
 

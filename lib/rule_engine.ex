@@ -1,19 +1,16 @@
 defmodule ExFSM.RuleEngine do
-  alias ExFSM.Acc
-  alias ExFSM.Meta
-
   @type tag :: :ok | :warning | :error
 
   @spec run(module, {atom, atom}, map(), any, keyword) ::
-          {:next_state, atom, any, Acc.t()}
-          | {:keep_state, atom, any, Acc.t()}
-          | {:error, term, Acc.t()}
-          | {:steps_done, map(), map(), any, Acc.t()}
+          {:next_state, atom, any, ExFSM.Acc.t()}
+          | {:keep_state, atom, any, ExFSM.Acc.t()}
+          | {:error, term, ExFSM.Acc.t()}
+          | {:steps_done, map(), map(), any, ExFSM.Acc.t()}
   def run(handler, {state_name, event} = key, params, external_state, opts \\ []) do
     mode = Keyword.get(opts, :mode, :full)
 
-    acc0 = %Acc{params: params, state: external_state, steps: [], exit: nil}
-    Meta.init(external_state, params, acc0)
+    acc0 = %ExFSM.Acc{params: params, state: external_state, steps: [], exit: nil}
+    ExFSM.Meta.init(external_state, params, acc0)
 
     case mode do
       :steps_only ->
@@ -36,17 +33,17 @@ defmodule ExFSM.RuleEngine do
     end
   end
 
-  @spec replay(module, {atom, atom}, map(), any, Acc.t(), keyword) ::
-          {:next_state, atom, any, Acc.t()}
-          | {:keep_state, atom, any, Acc.t()}
-          | {:error, term, Acc.t()}
-          | {:steps_done, map(), map(), any, Acc.t()}
+  @spec replay(module, {atom, atom}, map(), any, ExFSM.Acc.t(), keyword) ::
+          {:next_state, atom, any, ExFSM.Acc.t()}
+          | {:keep_state, atom, any, ExFSM.Acc.t()}
+          | {:error, term, ExFSM.Acc.t()}
+          | {:steps_done, map(), map(), any, ExFSM.Acc.t()}
   def replay(
         handler,
         {state_name, event} = key,
         base_params,
         external_state,
-        %Acc{} = acc,
+        %ExFSM.Acc{} = acc,
         opts \\ []
       ) do
     mode = Keyword.get(opts, :mode, :full)
@@ -63,7 +60,7 @@ defmodule ExFSM.RuleEngine do
       end
 
     # Init meta avec l'external_state et les params de (re)lancement
-    Meta.init(external_state, params1, acc)
+    ExFSM.Meta.init(external_state, params1, acc)
 
     # Déterminer le point de reprise
     start_rule =
@@ -86,7 +83,7 @@ defmodule ExFSM.RuleEngine do
         # Applique éventuellement des params sur l'acc (si override/merge voulus)
         acc1 =
           if params1 != acc.params,
-            do: %Acc{acc | params: params1},
+            do: %ExFSM.Acc{acc | params: params1},
             else: acc
 
         case mode do
@@ -125,12 +122,12 @@ defmodule ExFSM.RuleEngine do
 
   # 1) 1ère règle à rejouer : la première avec tag != :ok (depuis le début)
   # steps est stocké "newest first" (on cons au head)
-  defp pick_replay_start_rule(%Acc{steps: []}), do: nil
+  defp pick_replay_start_rule(%ExFSM.Acc{steps: []}), do: nil
 
   # 1) Cas le plus fréquent: on a déjà quitté par une règle non-ok (chosen: :exit)
-  defp pick_replay_start_rule(%Acc{steps: [%{chosen: :exit, rule: r} | _]}), do: r
+  defp pick_replay_start_rule(%ExFSM.Acc{steps: [%{chosen: :exit, rule: r} | _]}), do: r
 
-  defp pick_replay_start_rule(%Acc{steps: steps} = _acc) do
+  defp pick_replay_start_rule(%ExFSM.Acc{steps: steps} = _acc) do
     # plus ancien -> plus récent
     chrono = Enum.reverse(steps)
 
@@ -149,11 +146,11 @@ defmodule ExFSM.RuleEngine do
     end
   end
 
-  defp derive_next_state(%Acc{exit: {tag, payload}})
+  defp derive_next_state(%ExFSM.Acc{exit: {tag, payload}})
        when tag in [:ok, :warning, :error] and is_atom(payload),
        do: payload
 
-  defp derive_next_state(%Acc{}), do: nil
+  defp derive_next_state(%ExFSM.Acc{}), do: nil
 
   defp entry_rule!(handler, key), do: apply(handler, :__rules_entry__, [key])
 
@@ -229,13 +226,13 @@ defmodule ExFSM.RuleEngine do
 
   # -------- core ----------
 
-  defp exec_from(_handler, _key, :exit, params, state_flow, %Acc{} = acc, _mode) do
+  defp exec_from(_handler, _key, :exit, params, state_flow, %ExFSM.Acc{} = acc, _mode) do
     acc2 = %{acc | params: params, state: state_flow, exit: acc.exit || {:ok, :done}}
-    Meta.update_acc(acc2)
+    ExFSM.Meta.update_acc(acc2)
     {acc2, derive_next_state(acc2)}
   end
 
-  defp exec_from(handler, key, rule, params, state_flow, %Acc{} = acc, mode) do
+  defp exec_from(handler, key, rule, params, state_flow, %ExFSM.Acc{} = acc, mode) do
     t0 = System.monotonic_time()
 
     case apply(handler, :"__rule__#{rule}", [params, state_flow]) do
@@ -249,8 +246,8 @@ defmodule ExFSM.RuleEngine do
           time_ms: dt_ms(t0)
         }
 
-        acc2 = %Acc{acc | params: params2, state: state2, steps: [step | acc.steps]}
-        Meta.update_acc(acc2)
+        acc2 = %ExFSM.Acc{acc | params: params2, state: state2, steps: [step | acc.steps]}
+        ExFSM.Meta.update_acc(acc2)
         exec_from(handler, key, next_rule, params2, state2, acc2, mode)
 
       {:__exit__, payload, params2, state2, tag} ->
@@ -263,7 +260,7 @@ defmodule ExFSM.RuleEngine do
           time_ms: dt_ms(t0)
         }
 
-        acc2 = %Acc{
+        acc2 = %ExFSM.Acc{
           acc
           | params: params2,
             state: state2,
@@ -271,7 +268,7 @@ defmodule ExFSM.RuleEngine do
             exit: {tag, payload}
         }
 
-        Meta.update_acc(acc2)
+        ExFSM.Meta.update_acc(acc2)
         {acc2, derive_next_state(acc2)}
 
       other ->
@@ -280,7 +277,7 @@ defmodule ExFSM.RuleEngine do
     end
   end
 
-  defp apply_exit(handler, {state_name, event}, proposed_next_state, %Acc{} = acc) do
+  defp apply_exit(handler, {state_name, event}, proposed_next_state, %ExFSM.Acc{} = acc) do
     out_fun =
       case function_exported?(handler, :rules_outputs, 0) do
         true -> Map.get(handler.rules_outputs(), {state_name, event})
