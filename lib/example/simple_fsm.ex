@@ -4,7 +4,6 @@
 #   Montre les sorties `:ok`, `:warning`, `:error` et l'usage de `meta.delta`.
 #   """
 #   use ExFSM
-#   use ExFSM.Rule.DSL
 
 #   # Implémentation minimale du protocole pour un state sous forme de map
 #   # defimpl ExFSM.Machine.State, for: Map do
