@@ -99,12 +99,7 @@ defmodule ExFSM do
   #                        state_override \\ var!(state),
   #                        tag \\ :ok)
   # ------------------------------------------------------
-  defmacro rules_exit(
-             payload_ast,
-             params_override_ast \\ nil,
-             state_override_ast \\ nil,
-             tag_ast \\ :ok
-           ) do
+  defmacro rules_exit(payload_ast, params_override_ast \\ nil, state_override_ast \\ nil, tag_ast \\ :ok) do
     quote do
       {:__exit__, unquote(payload_ast), unquote(params_override_ast) || var!(params),
        unquote(state_override_ast) || var!(state), unquote(tag_ast)}
@@ -115,20 +110,15 @@ defmodule ExFSM do
   # Classic deftrans / defbypass
   # ---------------------------------------------------------------------------
 
-  @type transition ::
-          ({event_name :: atom, event_param :: any}, state :: any ->
-             {:next_state, event_name :: atom, state :: any}
-             | {:next_state, event_name :: atom, state :: any, non_neg_integer}
-             | {:keep_state, state :: any}
-             | {:error, term})
+  @type transition :: ({event_name :: atom, event_param :: any}, state :: any ->
+    {:next_state, event_name :: atom, state :: any}
+    | {:next_state, event_name :: atom, state :: any, non_neg_integer}
+    | {:keep_state, state :: any}
+    | {:error, term})
 
   defmacro deftrans({state, _m, [{event, _param} | _]} = signature, body_block) do
     quote do
-      @fsm Map.put(
-             @fsm || %{},
-             {unquote(state), unquote(event)},
-             {__MODULE__, @to || unquote(Enum.uniq(ExFSM.find_nextstates(body_block[:do])))}
-           )
+      @fsm Map.put(@fsm || %{}, {unquote(state), unquote(event)}, {__MODULE__, @to || unquote(Enum.uniq(ExFSM.find_nextstates(body_block[:do])))})
 
       doc = Module.get_attribute(__MODULE__, :doc)
       @docs Map.put(@docs || %{}, {:transition_doc, unquote(state), unquote(event)}, doc)
@@ -180,9 +170,7 @@ defmodule ExFSM do
   defmacro defrule(name_ast, params_ast, state_ast, do: body) do
     mod = __CALLER__.module
 
-    {st, ev} =
-      Module.get_attribute(mod, :current_ruleset) ||
-        raise(ArgumentError, "defrule must be inside deftrans_rules")
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrule must be inside deftrans_rules")
 
     nexts = ExFSM.find_next_rules(body)
 
@@ -190,11 +178,7 @@ defmodule ExFSM do
     ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
     graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
 
-    Module.put_attribute(
-      mod,
-      :rules_graph,
-      Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph})
-    )
+    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
 
     fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
 
@@ -207,9 +191,7 @@ defmodule ExFSM do
   defmacro defrule({name_ast, _ctx, [params_ast, state_ast]}, do: body) do
     mod = __CALLER__.module
 
-    {st, ev} =
-      Module.get_attribute(mod, :current_ruleset) ||
-        raise(ArgumentError, "defrule must be inside deftrans_rules")
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrule must be inside deftrans_rules")
 
     # introspection des sorties depuis le body
     nexts = ExFSM.find_next_rules(body)
@@ -218,11 +200,7 @@ defmodule ExFSM do
     ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
     graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
 
-    Module.put_attribute(
-      mod,
-      :rules_graph,
-      Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph})
-    )
+    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
 
     fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
 
@@ -237,8 +215,7 @@ defmodule ExFSM do
   defp infer_entry_rule(graph) when map_size(graph) == 0, do: nil
 
   defp infer_entry_rule(graph) when is_map(graph) do
-    preds =
-      graph
+    preds = graph
       |> Enum.flat_map(fn {_rule, %{next: ns}} -> ns || [] end)
       |> MapSet.new()
 
@@ -257,20 +234,16 @@ defmodule ExFSM do
   defmacro defrules_commit(opts \\ []) do
     mod = __CALLER__.module
 
-    {st, ev} =
-      Module.get_attribute(mod, :current_ruleset) ||
-        raise(ArgumentError, "defrules_commit must be inside deftrans_rules")
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrules_commit must be inside deftrans_rules")
 
     rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
 
-    %{entry: entry0, graph: graph0, weights: weights0} =
-      Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
+    %{entry: entry0, graph: graph0, weights: weights0} = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
 
     {opts_term, _} = Code.eval_quoted(opts, [], __CALLER__)
     user_entry = opts_term[:entry] || entry0
 
-    user_weights =
-      case opts_term[:weights] do
+    user_weights = case opts_term[:weights] do
         nil -> weights0 || %{}
         m when is_map(m) -> m
         kw when is_list(kw) -> Map.new(kw)
@@ -278,8 +251,7 @@ defmodule ExFSM do
       end
 
     # Si pas d'entry explicit, on l’infère depuis le graphe
-    entry =
-      case user_entry || entry0 do
+    entry = case user_entry || entry0 do
         nil -> infer_entry_rule(graph0)
         e -> e
       end
@@ -317,9 +289,7 @@ defmodule ExFSM do
   defmacro defrules_exit(new_params_ast, new_state_ast, proposed_ast, do: body_ast) do
     mod = __CALLER__.module
 
-    {st, ev} =
-      Module.get_attribute(mod, :current_ruleset) ||
-        raise(ArgumentError, "defrules_exit must be inside deftrans_rules")
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrules_exit must be inside deftrans_rules")
 
     out_fun = String.to_atom("__rules_exit__#{st}_#{ev}")
 
