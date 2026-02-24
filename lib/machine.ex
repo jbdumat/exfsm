@@ -205,16 +205,15 @@ defmodule ExFSM.Machine do
   end
 
   @spec available_actions(State.t()) :: [atom()]
-  def available_actions(state) do
+  def available_actions({state, params}) do
     state_name = State.state_name(state)
-    handler     = State.handlers(state, %{}) |> List.first()
+    handlers = State.handlers(state, params)
 
-    classic_actions =
-      handler.fsm()
+    classic_actions = ExFSM.Machine.fsm(handlers)
       |> Enum.filter(fn {{from,_},_} -> from == state_name end)
       |> Enum.map(fn {{_,action},_} -> action end)
 
-    rules_actions =
+    rules_actions = handlers |> Enum.map(fn handler ->
       if function_exported?(handler, :rules_graph, 0) do
         handler.rules_graph()
         |> Map.keys()
@@ -223,16 +222,17 @@ defmodule ExFSM.Machine do
       else
         []
       end
+    end) |> List.flatten()
 
     bypass_actions =
-      handler.event_bypasses()
+      ExFSM.Machine.event_bypasses(handlers)
       |> Map.keys()
 
     Enum.uniq(classic_actions ++ rules_actions ++ bypass_actions)
   end
 
-  @spec action_available?(State.t(), atom()) :: boolean()
-  def action_available?(state, action) do
-    action in available_actions(state)
+  @spec action_available?(State.t(), any(), atom()) :: boolean()
+  def action_available?(state, params, action) do
+    action in available_actions({state, params})
   end
 end
