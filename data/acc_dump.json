@@ -1,0 +1,345 @@
+{
+  "steps": [
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "p",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m",
+            "p"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "exit"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "m",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j",
+            "m"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "p"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "j",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i",
+            "j"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "m"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "i",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g",
+            "i"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "j"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "g",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "g"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "i"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "e",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "g"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "d",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c",
+            "d"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "e"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "c",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b",
+            "c"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a",
+            "b"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "d"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "b",
+      "out": {
+        "state": {
+          "seq": [
+            "a",
+            "b"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "seq": [
+            "a"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "c"
+    },
+    {
+      "time_ms": 0,
+      "tag": "ok",
+      "rule": "a",
+      "out": {
+        "state": {
+          "seq": [
+            "a"
+          ],
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "in": {
+        "state": {
+          "__state__": "init"
+        },
+        "params": {}
+      },
+      "chosen": "b"
+    }
+  ],
+  "state": {
+    "seq": [
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "g",
+      "i",
+      "j",
+      "m",
+      "p"
+    ],
+    "__state__": "init"
+  },
+  "params": {},
+  "meta": {},
+  "exit": [
+    "ok",
+    {
+      "result": "done"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-defmodule ExFSM.Mixfile do
+defmodule ExFSM.V2.Mixfile do
   use Mix.Project
 
   def project do
@@ -14,7 +14,7 @@ defmodule ExFSM.Mixfile do
       build_embedded: Mix.env() == :prod,
       consolidate_protocols: Mix.env() != :test,
       docs: [
-        main: "ExFSM",
+        main: "ExFSM.V2",
         source_url: "https://github.com/kbrw/exfsm/tree/v0.1.6",
         source_ref: "master"
       ],
@@ -30,7 +30,10 @@ defmodule ExFSM.Mixfile do
           "Doc" => "http://hexdocs.pm/exfsm"
         }
       ],
+      test_coverage: [tool: ExCoveralls],
+      preferred_cli_env: [coveralls: :test],
       deps: [
+        {:poison, "~> 5.0"},
         {:ex_doc, ">= 0.0.0", only: :dev}
       ]
     ]

@@ -1,94 +1,127 @@
 defmodule ExFSM do
-  @type fsm_spec :: %{{state_name :: atom, event_name :: atom} => {exfsm_module :: atom,[dest_statename :: atom]}}
   @moduledoc """
-  After `use ExFSM` : define FSM transition handler with `deftrans fromstate({action_name,params},state)`.
-  A function `fsm` will be created returning a map of the `fsm_spec` describing the fsm.
+  DSL de FSM basé sur *rules* (graphes conditionnels).
+  Transitions déclarées avec `deftrans_rules/2` puis règles avec `defrule/2`,
+  et clôture par `defrules_commit/1` + `defrules_exit/4`.
 
-  Destination states are found with AST introspection, if the `{:next_state,xxx,xxx}` is defined
-  outside the `deftrans/2` function, you have to define them manually defining a `@to` attribute.
+  Introspection:
+    * rules_graph/0     -> %{{state,event} => %{entry:, graph:, weights: %{rule=>weight}}}
+    * rules_outputs/0   -> %{{state,event} => exit_fun_atom}
+    * fsm/0             -> %{{state,event} => {__MODULE__, to_states}}
+    * event_bypasses/0  -> %{event => __MODULE__}
 
-  For instance :
-
-    iex> defmodule Elixir.Door do
-    ...>   use ExFSM
-    ...>
-    ...>   @doc "Close to open"
-    ...>   @to [:opened]
-    ...>   deftrans closed({:open, _}, s) do
-    ...>     {:next_state, :opened, s}
-    ...>   end
-    ...>
-    ...>   @doc "Close to close"
-    ...>   deftrans closed({:close, _}, s) do
-    ...>     {:next_state, :closed, s}
-    ...>   end
-    ...>
-    ...>   deftrans closed({:else, _}, s) do
-    ...>     {:next_state, :closed, s}
-    ...>   end
-    ...>
-    ...>   @doc "Open to open"
-    ...>   deftrans opened({:open, _}, s) do
-    ...>     {:next_state, :opened, s}
-    ...>   end
-    ...>
-    ...>   @doc "Open to close"
-    ...>   @to [:closed]
-    ...>   deftrans opened({:close, _}, s) do
-    ...>     {:next_state, :closed, s}
-    ...>   end
-    ...>
-    ...>   deftrans opened({:else, _}, s) do
-    ...>     {:next_state, :opened, s}
-    ...>   end
-    ...> end
-    ...> Door.fsm
-    %{{:closed, :close} => {Door, [:closed]}, {:closed, :else} => {Door, [:closed]},
-      {:closed, :open} => {Door, [:opened]}, {:opened, :close} => {Door, [:closed]},
-      {:opened, :else} => {Door, [:opened]}, {:opened, :open} => {Door, [:opened]}}
-    iex> Door.docs
-    %{{:transition_doc, :closed, :close} => "Close to close",
-      {:transition_doc, :closed, :else} => nil,
-      {:transition_doc, :closed, :open} => "Close to open",
-      {:transition_doc, :opened, :close} => "Open to close",
-      {:transition_doc, :opened, :else} => nil,
-      {:transition_doc, :opened, :open} => "Open to open"}
   """
+
+  # ------------------------------- __using__ ----------------------------------
 
   defmacro __using__(_opts) do
     quote do
       import ExFSM
+
       @fsm %{}
       @check %{}
-      @bypasses %{}
       @docs %{}
+      @bypasses %{}
       @to nil
+      @rules_graph %{}
+      @rules_outputs %{}
+      @current_ruleset nil
+      @entry_rule nil
+      @weights %{}
+
       @before_compile ExFSM
     end
   end
+
   defmacro __before_compile__(_env) do
     quote do
+
       def fsm, do: @fsm
       def check, do: @check
-      def event_bypasses, do: @bypasses
       def docs, do: @docs
+      def event_bypasses, do: @bypasses
+      def rules_graph, do: @rules_graph
+      def rules_outputs, do: @rules_outputs
       def match_trans(_, _, _, _), do: false
     end
   end
 
-  @doc """
-    Define a function of type `transition` describing a state and its
-    transition. The function name is the state name, the transition is the
-    first argument. A state object can be modified and is the second argument.
+  # === Helpers META (fonctions publiques) ===
+  def meta, do: ExFSM.Meta.get()
 
-        deftrans opened({:close_door,_params},state) do
-          {:next_state,:closed,state}
-        end
-  """
-  @type transition :: (({event_name :: atom, event_param :: any},state :: any) -> {:next_state,event_name :: atom,state :: any})
+  # === Sucres explicites (fonctions publiques) ===
+  def next_ok(next_rule, params, state, tag \\ :ok),
+    do: {:__next__, next_rule, params, state, tag}
+
+  def next_exit(payload, params, state, tag \\ :ok),
+    do: {:__exit__, payload, params, state, tag}
+
+  def next_warn(payload, params, state),
+    do: {:__exit__, payload, params, state, :warning}
+
+  def next_error(payload, params, state),
+    do: {:__exit__, payload, params, state, :error}
+
+  # === Macros tolérants (utilisent var!/1 pour capturer les variables de l'appelant) ===
+
+  # ------------------------------------------------------
+  # next_rule({:rule, params, state}, tag \\ :ok)
+  # ou forme implicite: next_rule({:rule, params}, tag)
+  # ------------------------------------------------------
+  defmacro next_rule(arg_ast, tag_ast \\ :ok) do
+    {rule_ast, params_ast, state_ast} =
+      case arg_ast do
+        # {:rule, params, state}
+        {:{}, _, [r_ast, p_ast, s_ast]} ->
+          {r_ast, p_ast, s_ast}
+
+        # {:rule, params}
+        {:{}, _, [r_ast, p_ast]} ->
+          {r_ast, p_ast, Macro.var(:state, nil)}
+
+        # forme keyword [rule: params]
+        [{r_atom, p_ast}] when is_atom(r_atom) ->
+          {r_atom, p_ast, Macro.var(:state, nil)}
+
+        # tuple “plat” {rule, params, state}
+        {r_ast, p_ast, s_ast} ->
+          {r_ast, p_ast, s_ast}
+
+        other ->
+          raise ArgumentError,
+                "next_rule attend {:rule, params, state} ou {:rule, params}, reçu: #{Macro.to_string(other)}"
+      end
+
+    quote do
+      {:__next__, unquote(rule_ast), unquote(params_ast), unquote(state_ast), unquote(tag_ast)}
+    end
+  end
+
+  # ------------------------------------------------------
+  # rules_exit(payload, params_override \\ var!(params),
+  #                        state_override \\ var!(state),
+  #                        tag \\ :ok)
+  # ------------------------------------------------------
+  defmacro rules_exit(payload_ast, params_override_ast \\ nil, state_override_ast \\ nil, tag_ast \\ :ok) do
+    quote do
+      {:__exit__, unquote(payload_ast), unquote(params_override_ast) || var!(params),
+       unquote(state_override_ast) || var!(state), unquote(tag_ast)}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Classic deftrans / defbypass
+  # ---------------------------------------------------------------------------
+
+  @type transition :: ({event_name :: atom, event_param :: any}, state :: any ->
+    {:next_state, event_name :: atom, state :: any}
+    | {:next_state, event_name :: atom, state :: any, non_neg_integer}
+    | {:keep_state, state :: any}
+    | {:error, term})
+
   defmacro deftrans({state,_meta,[{trans,params},obj|_]}=signature, body_block) do
     quote do
-      @fsm Map.put(@fsm,{unquote(state),unquote(trans)},{__MODULE__, @to || unquote(Enum.uniq(find_nextstates(body_block[:do])))})
+      @fsm Map.put(@fsm,{unquote(state),unquote(trans)},{__MODULE__, @to || unquote(Enum.uniq(ExFSM.find_nextstates(body_block[:do])))})
       doc = Module.get_attribute(__MODULE__, :doc)
       @docs Map.put(@docs,{:transition_doc,unquote(state),unquote(trans)},doc)
       def match_trans(unquote(state), unquote(trans), unquote(ExFSM.silent(obj)), unquote(ExFSM.silent(params))), do: true
@@ -107,6 +140,31 @@ defmodule ExFSM do
     end
   end
 
+  # ------------------------- rules: entrée de transition ----------------------
+  @doc """
+  Déclare une transition (état + évènement) contrôlée par un graphe de règles.
+  À l’intérieur : `defrule a(params, tmp)`, `defrules_commit/1`, `defrules_exit/2`.
+  """
+  defmacro deftrans_rules({state_ast, _m, [{event_ast, params}, obj|_]} = _sig, do: block) do
+    mod = __CALLER__.module
+    # mark the active ruleset for the block
+    Module.put_attribute(mod, :current_ruleset, {state_ast, event_ast})
+
+    # ensure we have a rules_graph entry to mutate from defrule/2
+    rg = Module.get_attribute(mod, :rules_graph) || %{}
+
+    Module.put_attribute(
+      mod,
+      :rules_graph,
+      Map.put_new(rg, {state_ast, event_ast}, %{entry: nil, graph: %{}, weights: %{}})
+    )
+
+    quote do
+      def match_trans(unquote(state_ast), unquote(event_ast), unquote(ExFSM.silent(obj)), unquote(ExFSM.silent(params))), do: true
+      unquote(block)
+      # do NOT reset @current_ruleset here — defrules_exit/3 still needs it
+    end
+  end
 
   def silent({t, {_, _, _} = a}), do: {t, silent(a)}
   def silent({t, a}) when is_tuple(a), do: {t, List.to_tuple(silent(Tuple.to_list(a)))}
@@ -120,179 +178,223 @@ defmodule ExFSM do
   def silent(list) when is_list(list), do: Enum.map(list, &silent/1)
   def silent(v), do: v
 
-  defp find_nextstates({:{},_,[:next_state,state|_]}) when is_atom(state), do: [state]
-  defp find_nextstates({_,_,asts}), do: find_nextstates(asts)
-  defp find_nextstates({_,asts}), do: find_nextstates(asts)
-  defp find_nextstates(asts) when is_list(asts), do: Enum.flat_map(asts,&find_nextstates/1)
-  defp find_nextstates(_), do: []
-end
+  # Classic introspection
+  def find_nextstates({:{}, _, [:next_state, state | _]}) when is_atom(state), do: [state]
+  def find_nextstates({_, _, asts}), do: find_nextstates(asts)
+  def find_nextstates({_, asts}), do: find_nextstates(asts)
+  def find_nextstates(asts) when is_list(asts), do: Enum.flat_map(asts, &find_nextstates/1)
+  def find_nextstates(_), do: []
 
-defmodule ExFSM.Machine do
-  @moduledoc """
-  Module to simply use FSMs defined with ExFSM :
-
-  - `ExFSM.Machine.fsm/1` merge fsm from multiple handlers (see `ExFSM` to see how to define one).
-  - `ExFSM.Machine.event_bypasses/1` merge bypasses from multiple handlers (see `ExFSM` to see how to define one).
-  - `ExFSM.Machine.event/2` allows you to execute the correct handler from a state and action
-
-  Define a structure implementing `ExFSM.Machine.State` in order to
-  define how to extract handlers and state_name from state, and how
-  to apply state_name change. Then use `ExFSM.Machine.event/2` in order
-  to execute transition.
-
-      iex> defmodule Elixir.Door1 do
-      ...>   use ExFSM
-      ...>   deftrans closed({:open_door,_},s) do {:next_state,:opened,s} end
-      ...> end
-      ...> defmodule Elixir.Door2 do
-      ...>   use ExFSM
-      ...>   @doc "allow multiple closes"
-      ...>   defbypass close_door(_,s), do: {:keep_state,Map.put(s,:doubleclosed,true)}
-      ...>   @doc "standard door open"
-      ...>   deftrans opened({:close_door,_},s) do {:next_state,:closed,s} end
-      ...> end
-      ...> ExFSM.Machine.fsm([Door1,Door2])
-      %{
-        {:closed,:open_door}=>{Door1,[:opened]},
-        {:opened,:close_door}=>{Door2,[:closed]}
-      }
-      iex> ExFSM.Machine.event_bypasses([Door1,Door2])
-      %{close_door: Door2}
-      iex> defmodule Elixir.DoorState do defstruct(handlers: [Door1,Door2], state: nil, doubleclosed: false) end
-      ...> defimpl ExFSM.Machine.State, for: DoorState do
-      ...>   def handlers(d) do d.handlers end
-      ...>   def state_name(d) do d.state end
-      ...>   def set_state_name(d,name) do %{d|state: name} end
-      ...> end
-      ...> struct(DoorState, state: :closed) |> ExFSM.Machine.event({:open_door,nil})
-      {:next_state,%{__struct__: DoorState, handlers: [Door1,Door2],state: :opened, doubleclosed: false}}
-      ...> struct(DoorState, state: :closed) |> ExFSM.Machine.event({:close_door,nil})
-      {:next_state,%{__struct__: DoorState, handlers: [Door1,Door2],state: :closed, doubleclosed: true}}
-      iex> ExFSM.Machine.find_info(struct(DoorState, state: :opened),:close_door)
-      {:known_transition,"standard door open"}
-      iex> ExFSM.Machine.find_info(struct(DoorState, state: :closed),:close_door)
-      {:bypass,"allow multiple closes"}
-      iex> ExFSM.Machine.available_actions(struct(DoorState, state: :closed))
-      [:open_door,:close_door]
+  # ------------------------------- defrule/2 ----------------------------------
+  @doc """
+  Forme explicite : defrule :a, params, state do ... end
+  Déclare un nœud de rule via `defrule a(params, state) do ... end`.
+  Le corps doit retourner `next_rule({...})` ou `rules_exit(...)`.
   """
+  defmacro defrule(name_ast, params_ast, state_ast, do: body) do
+    mod = __CALLER__.module
 
-  defprotocol State do
-    @doc "retrieve current state handlers from state object, return [Handler1,Handler2]"
-    def handlers(state, params)
-    @doc "retrieve current state name from state object"
-    def state_name(state)
-    @doc "set new state name"
-    def set_state_name(state, state_name, possible_handlers)
-  end
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrule must be inside deftrans_rules")
 
-  @doc "return the FSM as a map of transitions %{{state,action}=>{handler,[dest_states]}} based on handlers"
-  # Enum.into can remove same deftrans between modules -> change to a group_by
-  @spec fsm([exfsm_module :: atom]) :: ExFSM.fsm_spec
-  def fsm(handlers) when is_list(handlers), do: transition_map(handlers, :fsm)
-  def event_bypasses(handlers) when is_list(handlers), do: transition_map(handlers, :event_bypasses)
-  def transition_map(handlers, method), do:
-    (handlers |> Enum.map(&(apply(&1, method, []))) |> Enum.concat |> Enum.group_by(fn {k, _} -> k end, fn {_, v} -> v end))
+    nexts = ExFSM.find_next_rules(body)
 
-  @doc "find the ExFSM Module from the list `handlers` implementing the event `action` from `state_name`"
-  @spec find_handlers({state_name::atom,event_name::atom},[exfsm_module :: atom]) :: exfsm_module :: atom
-  def find_handlers({state_name, action}, handlers) when is_list(handlers) do
-    case Map.get(fsm(handlers), {state_name, action}) do
-      list when is_list(list) -> Enum.map(list, fn {handler, _} -> handler end)
-      _ -> []
-    end
-  end
-  @doc "same as `find_handlers/2` but using a 'meta' state implementing `ExFSM.Machine.State` and filter if a 'match_trans' is available"
-  def find_handlers({state, action, params}) do
-    state_name = State.state_name(state)
-    case find_handlers({state_name, action}, State.handlers(state, params)) do
-      list when is_list(list) ->
-        Enum.filter(list, fn handler -> handler.match_trans(state_name, action, state, params) end)
-      _ ->
-        nil
+    rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
+    ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
+    graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
+
+    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
+
+    fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
+
+    quote do
+      def unquote(fun)(unquote(params_ast), unquote(state_ast)), do: unquote(body)
     end
   end
 
-  def find_bypasses(action, handlers) when is_list(handlers) do
-    case Map.get(event_bypasses(handlers), action) do
-      list when is_map(list) -> Enum.map(list, fn {handler, _} -> handler end)
-      list when is_list(list) -> list
-      _ -> nil
+  @doc "Forme implicite : defrule a(params, state) do ... end"
+  defmacro defrule({name_ast, _ctx, [params_ast, state_ast]}, do: body) do
+    mod = __CALLER__.module
+
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrule must be inside deftrans_rules")
+
+    # introspection des sorties depuis le body
+    nexts = ExFSM.find_next_rules(body)
+
+    rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
+    ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
+    graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
+
+    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
+
+    fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
+
+    quote do
+      def unquote(fun)(unquote(params_ast), unquote(state_ast)), do: unquote(body)
     end
   end
 
-  def find_bypasses({state, action, params}) do
-    case find_bypasses(action, State.handlers(state, params)) do
-      list when is_list(list) ->
-        Enum.filter(list, fn handler -> handler.match_bypass(action, state, params) end)
-      _ ->
-        nil
+  # --------------------------- defrules_commit/1 ------------------------------
+
+  # Helper commit
+  defp infer_entry_rule(graph) when map_size(graph) == 0, do: nil
+
+  defp infer_entry_rule(graph) when is_map(graph) do
+    preds = graph
+      |> Enum.flat_map(fn {_rule, %{next: ns}} -> ns || [] end)
+      |> MapSet.new()
+
+    graph
+    |> Map.keys()
+    |> Enum.find(fn r -> not MapSet.member?(preds, r) end)
+  end
+
+  @doc """
+  Clôt le bloc de rules : calcule le point d'entrée si absent, finalise le graphe,
+  et **persiste** @rules_graph dans le module (comme on le fait pour @fsm/@rules_outputs).
+
+  Usage:
+    defrules_commit(entry: :validate, weights: %{reserve: 10})
+  """
+  defmacro defrules_commit(opts \\ []) do
+    mod = __CALLER__.module
+
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrules_commit must be inside deftrans_rules")
+
+    rules_graph = Module.get_attribute(mod, :rules_graph) || %{}
+
+    %{entry: entry0, graph: graph0, weights: weights0} = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
+
+    {opts_term, _} = Code.eval_quoted(opts, [], __CALLER__)
+    user_entry = opts_term[:entry] || entry0
+
+    user_weights = case opts_term[:weights] do
+      nil -> weights0 || %{}
+      m when is_map(m) -> m
+      kw when is_list(kw) -> Map.new(kw)
+      _ -> %{}
+    end
+
+    # Si pas d'entry explicit, on l’infère depuis le graphe
+    entry = case user_entry || entry0 do
+      nil -> infer_entry_rule(graph0)
+      e -> e
+    end
+
+    if (entry == nil), do: (raise ArgumentError, "No entry rule for #{inspect({st, ev})}. " <> "Set entry: ... or ensure a start node (no predecessors).")
+
+    quote do
+      # Persiste le graphe/poids/entry pour introspection
+      @rules_graph Map.put(
+        @rules_graph || %{},
+        {unquote(st), unquote(ev)},
+        %{
+          entry: unquote(entry),
+          graph: unquote(Macro.escape(graph0)),
+          weights: unquote(Macro.escape(user_weights))
+        })
+      def __rules_entry__({unquote(st), unquote(ev)}), do: unquote(entry)
+      :ok
     end
   end
 
-  def infos(handlers, _action) when is_list(handlers), do:
-    (handlers |> Enum.map(&(&1.docs)) |> Enum.concat |> Enum.into(%{}))
-  def infos(state, params, action), do:
-    infos(State.handlers(state, params), action)
+  # ---------------------------- defrules_exit/2 --------------------------------
+  @doc """
+  Forme : defrules_exit(new_params, new_state) do ... end
+  Épilogue: reçoit `new_params` (params finaux) et `new_state` (proposé), puis
+  retourne `{:next_state, ...}` / `{:keep_state, ...}` / `{:error, ...}`.
+  Accède à `ExFSM.meta()` pour `initial_state`, `initial_params`, `acc`, `delta`.
+  """
+  # defrules_exit(new_params, new_state_flow, proposed_next_state) do ... end
+  defmacro defrules_exit(new_params_ast, new_state_ast, proposed_ast, do: body_ast) do
+    mod = __CALLER__.module
 
-  def find_info(state, params, action) do
-    docs = infos(state, params, action)
-    if doc = docs[{:transition_doc, State.state_name(state), action}] do
-      {:known_transition, doc}
-    else
-      {:bypass, docs[{:event_doc, action}]}
+    {st, ev} = Module.get_attribute(mod, :current_ruleset) || raise(ArgumentError, "defrules_exit must be inside deftrans_rules")
+
+    out_fun = String.to_atom("__rules_exit__#{st}_#{ev}")
+
+    quote do
+      @rules_outputs Map.put(@rules_outputs || %{}, {unquote(st), unquote(ev)}, unquote(out_fun))
+      @fsm Map.put(@fsm || %{}, {unquote(st), unquote(ev)}, {__MODULE__, @to || []})
+
+      @current_ruleset nil
+      @to nil
+      @entry_rule nil
+      @weights %{}
+
+      def unquote(out_fun)(unquote(new_params_ast), unquote(new_state_ast), unquote(proposed_ast)) do
+        unquote(body_ast)
+      end
+
+      def unquote(st)({unquote(ev), params}, state) do
+        ExFSM.RuleEngine.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
+      end
     end
   end
 
-  # ExFSM.Machine.event(obj, {:create, "exx"})
-  # ExFSM.Machine.find_handler({obj, :create})
-  @doc "Meta application of the transition function, using `find_handler/2` to find the module implementing it."
-  @type meta_event_reply :: {:next_state,ExFSM.Machine.State.t} | {:next_state,ExFSM.Machine.State.t,timeout :: integer} | {:error,:illegal_action}
-  @spec event(ExFSM.Machine.State.t,{event_name :: atom, event_params :: any}) :: meta_event_reply
-  def event(state, {action, params}) do
-    case find_handlers({state, action, params}) do
-      [handler | _] ->
-        case apply(handler, State.state_name(state), [{action, params}, state]) do
-          {:next_state, state_name, state, timeout} -> {:next_state, State.set_state_name(state, state_name, State.handlers(state, params)), timeout}
-          {:next_state, state_name, state} -> {:next_state, State.set_state_name(state, state_name, State.handlers(state, params))}
-          other -> other
-        end
-      _ ->
-        case find_bypasses({state, action, params}) do
-          [handler | _]->
-            case apply(handler, action, [params, state]) do
-              {:keep_state, state} -> {:next_state, state}
-              {:next_state, state_name, state,timeout} -> {:next_state, State.set_state_name(state, state_name, State.handlers(state, params)), timeout}
-              {:next_state, state_name, state} -> {:next_state, State.set_state_name(state, state_name, State.handlers(state, params))}
-              other -> other
-            end
-          _ ->
-            {:error, :illegal_action}
-        end
-    end
+  # --- ExFSM: graph introspection ---
+
+  def find_next_rules(ast) do
+    {_, acc} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        # next_rule({:rule, params}) | next_rule({:rule, params, state})
+        {:next_rule, _, [arg]} = node, acc ->
+          {node, put_next_from_tuple_or_kw(acc, arg)}
+
+        # next_rule({:rule, params}, tag) | next_rule({:rule, params, state}, tag)
+        {:next_rule, _, [arg, _tag]} = node, acc ->
+          {node, put_next_from_tuple_or_kw(acc, arg)}
+
+        # next_ok(:rule, params, state)  (tag optionnel /3 ou /4)
+        {:next_ok, _, [rule_ast, _params, _state]} = node, acc ->
+          {node, put_next_from_rule_atom(acc, rule_ast)}
+
+        {:next_ok, _, [rule_ast, _params, _state, _tag]} = node, acc ->
+          {node, put_next_from_rule_atom(acc, rule_ast)}
+
+        # D'autres continuations explicites ? (si tu en ajoutes)
+        {:next_continue, _, [rule_ast | _]} = node, acc ->
+          {node, put_next_from_rule_atom(acc, rule_ast)}
+
+        # Retour littéral déjà expansé: {:__next__, rule, params, state, tag}
+        {:{}, _, [:__next__, rule_ast, _p, _s, _tag]} = node, acc ->
+          {node, put_next_from_rule_atom(acc, rule_ast)}
+
+        # Tout le reste: inchangé
+        node, acc ->
+          {node, acc}
+      end)
+
+    MapSet.to_list(acc)
   end
 
-  def available_actions({state, params}) do
-    handlers = State.handlers(state, params)
-    fsm_actions = ExFSM.Machine.fsm(handlers)
-      |> Enum.filter(fn {{from, _}, _} -> from == State.state_name(state) end)
-      |> Enum.map(fn {{_, action}, _} -> action end)
-    bypasses_actions = ExFSM.Machine.event_bypasses(handlers) |> Map.keys
-    Enum.uniq(fsm_actions ++ bypasses_actions)
-  end
-  # @spec available_actions(ExFSM.Machine.State.t) :: [action_name :: atom]
-  # def available_actions(state) do
-  #   fsm_actions = ExFSM.Machine.fsm(state)
-  #     |> Enum.filter(fn {{from, _}, _} -> from == State.state_name(state) end)
-  #     |> Enum.map(fn {{_, action}, _} -> action end)
-  #   bypasses_actions = ExFSM.Machine.event_bypasses(state) |> Map.keys
-  #   Enum.uniq(fsm_actions ++ bypasses_actions)
-  # end
+  # --- helpers internes de détection ---
 
-  #@spec action_available?(ExFSM.Machine.State.t,action_name :: atom) :: boolean
-  # def action_available?(state, action) do
-  #   action in available_actions(state)
-  # end
-  def action_available?(state, params, action) do
-    action in available_actions({state, params})
+  defp put_next_from_rule_atom(acc, rule_ast) when is_atom(rule_ast),
+    do: MapSet.put(acc, rule_ast)
+
+  defp put_next_from_rule_atom(acc, {:|>, _, _} = _pipe), do: acc
+
+  defp put_next_from_rule_atom(acc, {name, _, _ctx}) when is_atom(name),
+    do: MapSet.put(acc, name)
+
+  defp put_next_from_rule_atom(acc, _), do: acc
+
+  # {:rule, params} | {:rule, params, state} | [rule: params]
+  defp put_next_from_tuple_or_kw(acc, {:{}, _, [rule_ast, _p]}) do
+    put_next_from_rule_atom(acc, rule_ast)
   end
+
+  defp put_next_from_tuple_or_kw(acc, {:{}, _, [rule_ast, _p, _s]}) do
+    put_next_from_rule_atom(acc, rule_ast)
+  end
+
+  defp put_next_from_tuple_or_kw(acc, [{rule, _p}]) when is_atom(rule) do
+    MapSet.put(acc, rule)
+  end
+
+  defp put_next_from_tuple_or_kw(acc, {rule, _p}) when is_atom(rule),
+    do: MapSet.put(acc, rule)
+
+  defp put_next_from_tuple_or_kw(acc, other),
+    do: put_next_from_rule_atom(acc, other)
 end

@@ -1,0 +1,52 @@
+flowchart LR
+  n_init_go_err_early["err_early"] --> n_review_proceed_r["r"]
+  n_init_go_err_late["err_late"] --> n_review_proceed_r["r"]
+  n_init_go_err_terminal["err_terminal"] --> n_review_proceed_r["r"]
+  n_init_go_n["n"] --> n_review_proceed_r["r"]
+  n_init_go_p["p"] --> n_review_proceed_r["r"]
+subgraph init - go
+  n_init_go_a["a"]
+  n_init_go_a["a"] --> n_init_go_b["b"]
+  n_init_go_a["a"] --> n_init_go_err_early["err_early"]
+  n_init_go_b["b"] --> n_init_go_c["c"]
+  n_init_go_b["b"] --> n_init_go_d["d"]
+  n_init_go_b["b"] --> n_init_go_e["e"]
+  n_init_go_c["c"] --> n_init_go_d["d"]
+  n_init_go_d["d"] --> n_init_go_e["e"]
+  n_init_go_d["d"] --> n_init_go_err_late["err_late"]
+  n_init_go_d["d"] --> n_init_go_f["f"]
+  n_init_go_e["e"] --> n_init_go_g["g"]
+  n_init_go_e["e"] --> n_init_go_h["h"]
+  n_init_go_f["f"] --> n_init_go_g["g"]
+  n_init_go_g["g"] --> n_init_go_h["h"]
+  n_init_go_g["g"] --> n_init_go_i["i"]
+  n_init_go_h["h"] --> n_init_go_i["i"]
+  n_init_go_i["i"] --> n_init_go_j["j"]
+  n_init_go_i["i"] --> n_init_go_k["k"]
+  n_init_go_j["j"] --> n_init_go_m["m"]
+  n_init_go_k["k"] --> n_init_go_l["l"]
+  n_init_go_l["l"] --> n_init_go_m["m"]
+  n_init_go_m["m"] --> n_init_go_err_terminal["err_terminal"]
+  n_init_go_m["m"] --> n_init_go_n["n"]
+  n_init_go_m["m"] --> n_init_go_p["p"]
+end
+subgraph review - proceed
+  n_review_proceed_r["r"]
+  n_review_proceed_r["r"] --> n_review_proceed_s["s"]
+  n_review_proceed_r["r"] --> n_review_proceed_x_err["x_err"]
+  n_review_proceed_s["s"] --> n_review_proceed_t["t"]
+  n_review_proceed_s["s"] --> n_review_proceed_u["u"]
+  n_review_proceed_t["t"] --> n_review_proceed_v["v"]
+  n_review_proceed_u["u"] --> n_review_proceed_v["v"]
+  n_review_proceed_v["v"] --> n_review_proceed_w["w"]
+  n_review_proceed_v["v"] --> n_review_proceed_y["y"]
+  n_review_proceed_w["w"] --> n_review_proceed_y["y"]
+  n_review_proceed_y["y"] --> n_review_proceed_z_err["z_err"]
+  n_review_proceed_y["y"] --> n_review_proceed_z_ok["z_ok"]
+  n_review_proceed_y["y"] --> n_review_proceed_z_warn["z_warn"]
+end
+linkStyle 0 stroke:#10b981,stroke-width:3px,opacity:1
+linkStyle 1 stroke:#10b981,stroke-width:3px,opacity:1
+linkStyle 2 stroke:#10b981,stroke-width:3px,opacity:1
+linkStyle 3 stroke:#10b981,stroke-width:3px,opacity:1
+linkStyle 4 stroke:#10b981,stroke-width:3px,opacity:1
