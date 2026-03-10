@@ -24,7 +24,7 @@ defmodule Example.DEMO_FSM do
   defp check_fraud(_order, %{"fail" => "fraud"}), do: :error
   defp check_fraud(_order, _params), do: :ok
 
-  defp notify_erp(order, %{"fail" => "erp"}), do: :error
+  defp notify_erp(_order, %{"fail" => "erp"}), do: :error
   defp notify_erp(_order, %{"erp" => "warning"}), do: :warning
   defp notify_erp(order, _params), do: {:ok, order}
 
@@ -103,7 +103,7 @@ defmodule Example.DEMO_FSM do
   # --- NEW: replay OK (dry-run => replay/commit full) ---
   def demo_rules_replay_ok(params \\ %{}) do
     case demo_rules_dry_run(params) do
-      {:steps_done, p, st, _ext, acc} ->
+      {:steps_done, p, st, _ext, _acc} ->
         # Replay/commit with the enriched params coming from steps_only
         ExFSM.Machine.event(st, {:pay, p}, mode: :full)
 
@@ -202,7 +202,7 @@ defmodule Example.DEMO_FSM do
         :paid ->
           {:next_state, :paid, new_state_flow}
 
-        other ->
+        _other ->
           # IMPORTANT: keep it a next_state so Machine.event/3 returns meta [acc: acc]
           # The reason is carried by acc.exit (set by rules_exit/4).
           {:next_state, :payment_error, new_state_flow}

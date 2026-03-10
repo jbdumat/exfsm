@@ -162,7 +162,7 @@ defmodule ExFSM.RuleEngine do
         raise ArgumentError, "No ruleset for #{inspect({st, ev})}"
 
     weights = normalize_weights(weights0)
-    do_plan(graph, weights, from_rule, [])
+    do_plan(graph, weights, from_rule, [], MapSet.new()) |> Enum.reverse()
   end
 
   @doc """
@@ -226,8 +226,23 @@ defmodule ExFSM.RuleEngine do
 
   # -------- core ----------
 
-  defp exec_from(_handler, _key, :exit, params, state_flow, %ExFSM.Acc{} = acc, _mode) do
-    acc2 = %{acc | params: params, state: state_flow, exit: acc.exit || {:ok, :done}}
+  defp exec_from(_handler, key, :exit, params, state_flow, %ExFSM.Acc{} = acc, _mode) do
+    exit_val =
+      case acc.exit do
+        nil ->
+          # A defrule routed next_rule to :exit without calling rules_exit/4.
+          # This is a graph authoring mistake: rules_exit/4 must always be used to
+          # terminate a rule chain. We surface it as an error rather than silently
+          # returning {:ok, :done}.
+          raise ArgumentError,
+                "A rule in #{inspect(key)} routed to :exit without calling rules_exit/4. " <>
+                  "Use rules_exit(payload, params, state, tag) to terminate a rule chain."
+
+        val ->
+          val
+      end
+
+    acc2 = %{acc | params: params, state: state_flow, exit: exit_val}
     ExFSM.Meta.update_acc(acc2)
     {acc2, derive_next_state(acc2)}
   end
@@ -282,13 +297,22 @@ defmodule ExFSM.RuleEngine do
       case function_exported?(handler, :rules_outputs, 0) do
         true -> Map.get(handler.rules_outputs(), {state_name, event})
         false -> nil
-      end || :__rules_exit__
+      end
 
-    case apply(handler, out_fun, [acc.params, acc.state, proposed_next_state]) do
-      {:next_state, name, new_external_state} -> {:next_state, name, new_external_state, acc}
-      {:keep_state, name, same_external_state} -> {:keep_state, name, same_external_state, acc}
-      {:error, reason} -> {:error, reason, acc}
-      other -> {:error, {:invalid_rules_exit_return, other}, acc}
+    cond do
+      is_nil(out_fun) ->
+        {:error, {:missing_rules_exit, {state_name, event}}, acc}
+
+      not function_exported?(handler, out_fun, 3) ->
+        {:error, {:missing_rules_exit, {state_name, event}}, acc}
+
+      true ->
+        case apply(handler, out_fun, [acc.params, acc.state, proposed_next_state]) do
+          {:next_state, name, new_external_state} -> {:next_state, name, new_external_state, acc}
+          {:keep_state, name, same_external_state} -> {:keep_state, name, same_external_state, acc}
+          {:error, reason} -> {:error, reason, acc}
+          other -> {:error, {:invalid_rules_exit_return, other}, acc}
+        end
     end
   end
 
@@ -297,26 +321,32 @@ defmodule ExFSM.RuleEngine do
 
   # ---- runtime plannification helpers ----------------------------------------
   defp plan_path(graph, weights, entry) do
-    do_plan(graph, weights, entry, [])
+    do_plan(graph, weights, entry, [], MapSet.new()) |> Enum.reverse()
   end
 
-  defp do_plan(_graph, _weights, nil, acc), do: Enum.reverse(acc)
+  defp do_plan(_graph, _weights, nil, acc, _visited), do: acc
 
-  defp do_plan(graph, weights, rule, acc) do
-    acc2 = acc ++ [rule]
-    nexts = get_in(graph, [rule, :next]) || []
+  defp do_plan(graph, weights, rule, acc, visited) do
+    if MapSet.member?(visited, rule) do
+      # Cycle detected: stop traversal here, do not infinite-loop
+      acc
+    else
+      acc2 = [rule | acc]
+      visited2 = MapSet.put(visited, rule)
+      nexts = get_in(graph, [rule, :next]) || []
 
-    case nexts do
-      [] ->
-        acc2
+      case nexts do
+        [] ->
+          acc2
 
-      ls ->
-        next =
-          ls
-          |> Enum.sort_by(fn r -> {-Map.get(weights, r, 0), to_string(r)} end)
-          |> List.first()
+        ls ->
+          next =
+            ls
+            |> Enum.sort_by(fn r -> {-Map.get(weights, r, 0), to_string(r)} end)
+            |> List.first()
 
-        do_plan(graph, weights, next, acc2)
+          do_plan(graph, weights, next, acc2, visited2)
+      end
     end
   end
 

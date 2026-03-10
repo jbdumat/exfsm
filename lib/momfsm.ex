@@ -233,6 +233,14 @@ defmodule MomFSM do
     end
 
     def remove_last(list) when is_list(list), do: :lists.reverse(list) |> tl() |> :lists.reverse()
+
+    @doc """
+    Utility: full graph traversal producing all possible paths.
+
+    **Not intended for use in hot paths or production call stacks.**
+    The number of paths can grow exponentially with the size of the transition
+    graph. Use only for offline introspection, visualisation, or test helpers.
+    """
     def traverse_v3(transitions, acc, status_done, statuses_in) do
       Enum.reduce(transitions, acc, fn possibility, acc ->
         last = List.last(possibility)

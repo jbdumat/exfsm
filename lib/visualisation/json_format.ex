@@ -41,10 +41,10 @@ defmodule ExFSM.AccJSON do
   # Si jamais tu veux aussi encoder un acc "raw" déjà mapifié
   def encode(%{} = acc_map) do
     base = %{
-      "steps"      => acc_map |> Map.get(:steps)  |> or_string("steps")  |> encode_steps(),
-      "state"      => acc_map |> Map.get(:state)  |> or_string("state")  |> encode_value(),
-      "params"     => acc_map |> Map.get(:params) |> or_string("params") |> encode_value(),
-      "exit"       => acc_map |> Map.get(:exit)   |> or_string("exit")   |> encode_exit()
+      "steps"      => acc_map |> Map.get(:steps)  |> encode_steps(),
+      "state"      => acc_map |> Map.get(:state)  |> encode_value(),
+      "params"     => acc_map |> Map.get(:params) |> encode_value(),
+      "exit"       => acc_map |> Map.get(:exit)   |> encode_exit()
     }
 
     case extract_transition(acc_map) do
@@ -126,7 +126,4 @@ defmodule ExFSM.AccJSON do
   defp encode_atom(a) when is_atom(a), do: Atom.to_string(a)
   defp encode_atom(a),                 do: a
 
-  # petit helper pratique pour fallback sur clé string
-  defp or_string(nil, _k), do: nil
-  defp or_string(value, _k), do: value
 end

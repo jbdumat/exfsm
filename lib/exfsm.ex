@@ -264,7 +264,7 @@ defmodule ExFSM do
 
     %{entry: entry0, graph: graph0, weights: weights0} = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
 
-    {opts_term, _} = Code.eval_quoted(opts, [], __CALLER__)
+    opts_term = ExFSM.extract_literal_opts!(opts)
     user_entry = opts_term[:entry] || entry0
 
     user_weights = case opts_term[:weights] do
@@ -329,6 +329,49 @@ defmodule ExFSM do
         ExFSM.RuleEngine.run(__MODULE__, {unquote(st), unquote(ev)}, params, state)
       end
     end
+  end
+
+  # --- Compile-time literal opts extraction (replaces Code.eval_quoted) ---
+
+  @doc false
+  # Accepts keyword-list AST whose values are literals (atoms, integers, maps).
+  # Raises a compile-time ArgumentError if any value is a runtime expression.
+  def extract_literal_opts!([]), do: []
+
+  def extract_literal_opts!(kw_ast) when is_list(kw_ast) do
+    Enum.map(kw_ast, fn
+      {k, v} when is_atom(k) ->
+        {k, extract_literal_value!(v)}
+      other ->
+        raise ArgumentError,
+              "defrules_commit: opts must be a literal keyword list, got: #{Macro.to_string(other)}"
+    end)
+  end
+
+  def extract_literal_opts!(other) do
+    raise ArgumentError,
+          "defrules_commit: opts must be a literal keyword list, got: #{Macro.to_string(other)}"
+  end
+
+  defp extract_literal_value!(v) when is_atom(v) or is_integer(v) or is_float(v) or is_binary(v),
+    do: v
+
+  # %{...} map literal in AST form: {:%{}, _meta, pairs}
+  defp extract_literal_value!({:%{}, _, pairs}) do
+    Map.new(pairs, fn {k, v} -> {extract_literal_value!(k), extract_literal_value!(v)} end)
+  end
+
+  # keyword list as value: [{k, v}, ...]
+  defp extract_literal_value!(list) when is_list(list) do
+    Enum.map(list, fn
+      {k, v} -> {extract_literal_value!(k), extract_literal_value!(v)}
+      v -> extract_literal_value!(v)
+    end)
+  end
+
+  defp extract_literal_value!(other) do
+    raise ArgumentError,
+          "defrules_commit: expected a literal value, got: #{Macro.to_string(other)}"
   end
 
   # --- ExFSM: graph introspection ---

@@ -17,9 +17,26 @@ defmodule ExFSM.Machine do
   def to_list(list) when is_list(list), do: list
   def to_list(one), do: [one]
 
-  # Maps of transitions/bypasses for a list of handlers
+  # Maps of transitions/bypasses for a list of handlers.
+  # Results are cached in the process dictionary: safe under the transactor pattern
+  # where each FSM execution runs in a dedicated short-lived process.
   defp transition_map(handlers, method) do
-    (handlers |> Enum.map(&(apply(&1, method, []))) |> Enum.concat |> Enum.group_by(fn {k, _} -> k end, fn {_, v} -> v end))
+    cache_key = {__MODULE__, :transition_map_cache, handlers, method}
+
+    case Process.get(cache_key) do
+      nil ->
+        result =
+          handlers
+          |> Enum.map(&apply(&1, method, []))
+          |> Enum.concat()
+          |> Enum.group_by(fn {k, _} -> k end, fn {_, v} -> v end)
+
+        Process.put(cache_key, result)
+        result
+
+      cached ->
+        cached
+    end
   end
 
   def fsm(handlers) when is_list(handlers), do: transition_map(handlers, :fsm)
@@ -30,11 +47,7 @@ defmodule ExFSM.Machine do
   defp supports_rules_key?(handler, key) do
     cond do
       function_exported?(handler, :rules_graph, 0) ->
-        try do
-          handler.rules_graph() |> Map.has_key?(key)
-        rescue
-          _ -> false
-        end
+        Map.has_key?(handler.rules_graph(), key)
 
       function_exported?(handler, :__rules_entry__, 1) ->
         try do
@@ -138,11 +151,11 @@ defmodule ExFSM.Machine do
       {:steps_done, params, state, external_state, acc}
   """
   def event(state, {action, params}, opts \\ []) do
-    case find_handlers({state, action, params}) |> IO.inspect(label: "FIND HANDLERS") do
+    case find_handlers({state, action, params}) do
       [handler | _] ->
         dispatch_engine(handler, state, {action, params}, opts)
 
-      _ ->
+      [] ->
         case find_bypasses({state, action, params}) do
           [handler | _] ->
             # Bypass classique, on unifie aussi
@@ -167,7 +180,7 @@ defmodule ExFSM.Machine do
                 other
             end
 
-          _ ->
+          [] ->
             {:error, :illegal_action}
         end
     end
@@ -185,32 +198,24 @@ defmodule ExFSM.Machine do
   @doc "same as `find_handlers/2` but using a 'meta' state implementing `ExFSM.Machine.State` and filter if a 'match_trans' is available"
   def find_handlers({state, action, params}) do
     state_name = State.state_name(state)
-    case find_handlers({state_name, action}, State.handlers(state, params)) do
-      list when is_list(list) ->
-        Enum.filter(list, fn handler -> handler.match_trans(state_name, action, state, params) end)
-      _ ->
-        nil
-    end
+    find_handlers({state_name, action}, State.handlers(state, params))
+    |> Enum.filter(fn handler -> handler.match_trans(state_name, action, state, params) end)
   end
 
   def find_bypasses(action, handlers) when is_list(handlers) do
     case Map.get(event_bypasses(handlers), action) do
-      list when is_map(list) -> Enum.map(list, fn {handler, _} -> handler end)
       list when is_list(list) -> list
-      _ -> nil
+      _ -> []
     end
   end
 
   def find_bypasses({state, action, params}) do
-    case find_bypasses(action, State.handlers(state, params)) do
-      list when is_list(list) ->
-        Enum.filter(list, fn handler -> handler.match_bypass(action, state, params) end)
-      _ ->
-        nil
-    end
+    find_bypasses(action, State.handlers(state, params))
+    |> List.wrap()
+    |> Enum.filter(fn handler -> handler.match_bypass(action, state, params) end)
   end
 
-  @spec available_actions(State.t()) :: [atom()]
+  @spec available_actions({State.t(), any()}) :: [atom()]
   def available_actions({state, params}) do
     state_name = State.state_name(state)
     handlers = State.handlers(state, params)
@@ -240,13 +245,14 @@ defmodule ExFSM.Machine do
     action in available_actions({state, params})
   end
 
-  def infos(handlers, _action) when is_list(handlers), do:
-    (handlers |> Enum.map(&(&1.docs)) |> Enum.concat |> Enum.into(%{}))
-  def infos(state, params, action), do:
-    infos(State.handlers(state, params), action)
+  def infos(handlers) when is_list(handlers),
+    do: handlers |> Enum.map(& &1.docs) |> Enum.concat() |> Enum.into(%{})
+
+  def infos(state, params), do:
+    infos(State.handlers(state, params))
 
   def find_info(state, params, action) do
-    docs = infos(state, params, action)
+    docs = infos(state, params)
     if doc = docs[{:transition_doc, State.state_name(state), action}] do
       {:known_transition, doc}
     else
