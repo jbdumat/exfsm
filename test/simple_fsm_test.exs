@@ -34,7 +34,7 @@ defmodule Example.SimpleFSM.NewApiTest do
     test "OK path -> {:next_state, :done, new_state} + acc cohérent" do
       params = %{path: :ok_path}
 
-      {:next_state, :done, new_state, acc} = RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, mode: :full)
+      {:next_state, :done, new_state, acc} = RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, fsm_mode: :full)
 
       assert acc.exit == {:ok, :done}
       # ordre des rules (on avait empilé par cons, donc on reverse pour lire)
@@ -51,7 +51,7 @@ defmodule Example.SimpleFSM.NewApiTest do
     test "WARN path -> {:keep_state, :init, initial_state}" do
       params = %{path: :warn_path}
 
-      {:keep_state, :init, state_kept, acc} = RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, mode: :full)
+      {:keep_state, :init, state_kept, acc} = RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, fsm_mode: :full)
 
       assert state_kept == @state0
       assert acc.exit == {:warning, :warned}
@@ -60,7 +60,7 @@ defmodule Example.SimpleFSM.NewApiTest do
     test "ERROR path -> {:keep_state, :init, initial_state}" do
       params = %{path: :error_path}
 
-      {:keep_state, :init, state_kept, acc} = RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, mode: :full)
+      {:keep_state, :init, state_kept, acc} = RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, fsm_mode: :full)
 
       assert state_kept == @state0
       assert acc.exit == {:error, :failed}
@@ -72,7 +72,7 @@ defmodule Example.SimpleFSM.NewApiTest do
       params = %{path: :ok_path}
 
       {:steps_done, p2, s2, external_state, acc} =
-        RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, mode: :steps_only)
+        RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, fsm_mode: :steps_only)
 
       # l'external_state n'a pas été modifié
       assert external_state == @state0
@@ -93,10 +93,10 @@ defmodule Example.SimpleFSM.NewApiTest do
 
       # on exécute d'abord en steps_only
       {:steps_done, _p2, _s2, _ext, acc} =
-        RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, mode: :steps_only)
+        RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, fsm_mode: :steps_only)
 
       # puis on 'replay' en :full => applique __rules_exit__/3
-      {:next_state, :done, new_state, acc2} = RuleEngine.replay(SimpleFSM, {:init, :go}, params, @state0, acc, mode: :full)
+      {:next_state, :done, new_state, acc2} = RuleEngine.replay(SimpleFSM, {:init, :go}, params, @state0, acc, fsm_mode: :full)
 
       assert acc2.exit == {:ok, :done}
       assert MapSet.new(Map.get(new_state, :seq, [])) == MapSet.new([:a, :b, :c, :d])
@@ -106,7 +106,7 @@ defmodule Example.SimpleFSM.NewApiTest do
       bogus = %ExFSM.Acc{params: %{}, state: %{}, steps: [], exit: {:ok, :not_a_state}}
 
       {:error, _reason, _acc} =
-        RuleEngine.replay(SimpleFSM, {:init, :go}, %{}, @state0, bogus, mode: :full)
+        RuleEngine.replay(SimpleFSM, {:init, :go}, %{}, @state0, bogus, fsm_mode: :full)
     end
   end
 
@@ -116,7 +116,7 @@ defmodule Example.SimpleFSM.NewApiTest do
         params = %{path: :ok_path}
 
         {:steps_done, _p2, _s2, _s, acc} =
-          RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, mode: :steps_only)
+          RuleEngine.run(SimpleFSM, {:init, :go}, params, @state0, fsm_mode: :steps_only)
 
         applied = acc.steps |> Enum.reverse() |> Enum.map(& &1.rule)
         remaining = apply(SimpleFSM, :__remaining_rules__, [{:init, :go}, applied, acc])
@@ -136,7 +136,7 @@ defmodule Example.SimpleFSM.NewApiTest do
 
       # 1) steps_only: on obtient un acc avec :a ok, :b warning → exit warning
       {:steps_done, _p2, _s2, _ext, acc} =
-        RuleEngine.run(Example.SimpleFSM, {:init, :go}, params, state0, mode: :steps_only)
+        RuleEngine.run(Example.SimpleFSM, {:init, :go}, params, state0, fsm_mode: :steps_only)
 
       # Vérif de l'ordre
       seen = acc.steps |> Enum.reverse() |> Enum.map(& &1.rule)
@@ -148,7 +148,7 @@ defmodule Example.SimpleFSM.NewApiTest do
 
       {:next_state, :done, new_state, acc2} =
         RuleEngine.replay(Example.SimpleFSM, {:init, :go}, params, state0, acc,
-          mode: :full,
+          fsm_mode: :full,
           from: :b,
           params_override: params_fix
         )
@@ -167,12 +167,12 @@ defmodule Example.SimpleFSM.NewApiTest do
       state0 = %{__state__: :init}
 
       {:steps_done, _p2, _s2, _ext, acc} =
-        ExFSM.RuleEngine.run(Example.SimpleFSM, {:init, :go}, params, state0, mode: :steps_only)
+        ExFSM.RuleEngine.run(Example.SimpleFSM, {:init, :go}, params, state0, fsm_mode: :steps_only)
 
       # On ne précise pas :from, mais on donne merge_params pour passer en ok
       {:next_state, :done, _st, acc2} =
         ExFSM.RuleEngine.replay(Example.SimpleFSM, {:init, :go}, params, state0, acc,
-          mode: :full,
+          fsm_mode: :full,
           merge_params: %{path: :ok_path}
         )
 
@@ -184,12 +184,12 @@ defmodule Example.SimpleFSM.NewApiTest do
       s0 = %{__state__: :init}
 
       {:steps_done, _p2, _s2, _ext, acc} =
-        ExFSM.RuleEngine.run(Example.SimpleFSM, {:init, :go}, params, s0, mode: :steps_only)
+        ExFSM.RuleEngine.run(Example.SimpleFSM, {:init, :go}, params, s0, fsm_mode: :steps_only)
 
       # Sans :from
       {:next_state, :done, _st, acc2} =
         ExFSM.RuleEngine.replay(Example.SimpleFSM, {:init, :go}, params, s0, acc,
-          mode: :full,
+          fsm_mode: :full,
           merge_params: %{path: :ok_path}
         )
 
@@ -198,7 +198,7 @@ defmodule Example.SimpleFSM.NewApiTest do
       # Avec from: nil explicite
       {:next_state, :done, _st, acc3} =
         ExFSM.RuleEngine.replay(Example.SimpleFSM, {:init, :go}, params, s0, acc,
-          mode: :full,
+          fsm_mode: :full,
           from: nil,
           merge_params: %{path: :ok_path}
         )

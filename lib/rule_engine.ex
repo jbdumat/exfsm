@@ -7,12 +7,12 @@ defmodule ExFSM.RuleEngine do
           | {:error, term, ExFSM.Acc.t()}
           | {:steps_done, map(), map(), any, ExFSM.Acc.t()}
   def run(handler, {state_name, event} = key, params, external_state, opts \\ []) do
-    mode = Keyword.get(opts, :mode, :full)
+    fsm_mode = Keyword.get(opts, :fsm_mode, :full)
 
     acc0 = %ExFSM.Acc{params: params, state: external_state, steps: [], exit: nil}
     ExFSM.Meta.init(external_state, params, acc0)
 
-    case mode do
+    case fsm_mode do
       :steps_only ->
         {acc2, _prop} =
           exec_from(
@@ -46,7 +46,7 @@ defmodule ExFSM.RuleEngine do
         %ExFSM.Acc{} = acc,
         opts \\ []
       ) do
-    mode = Keyword.get(opts, :mode, :full)
+    fsm_mode = Keyword.get(opts, :fsm_mode, :full)
 
     # Prépare params (override/merge)
     params1 =
@@ -74,7 +74,7 @@ defmodule ExFSM.RuleEngine do
         # Déjà sorti ET rien à rejouer → juste appliquer la sortie si :full
         proposed = derive_next_state(acc)
 
-        case mode do
+        case fsm_mode do
           :steps_only -> {:steps_done, acc.params, acc.state, external_state, acc}
           :full -> apply_exit(handler, {state_name, event}, proposed, acc)
         end
@@ -86,7 +86,7 @@ defmodule ExFSM.RuleEngine do
             do: %ExFSM.Acc{acc | params: params1},
             else: acc
 
-        case mode do
+        case fsm_mode do
           :steps_only ->
             {acc2, _prop} =
               exec_from(
@@ -226,7 +226,7 @@ defmodule ExFSM.RuleEngine do
 
   # -------- core ----------
 
-  defp exec_from(_handler, key, :exit, params, state_flow, %ExFSM.Acc{} = acc, _mode) do
+  defp exec_from(_handler, key, :exit, params, state_flow, %ExFSM.Acc{} = acc, _fsm_mode) do
     exit_val =
       case acc.exit do
         nil ->
@@ -247,7 +247,7 @@ defmodule ExFSM.RuleEngine do
     {acc2, derive_next_state(acc2)}
   end
 
-  defp exec_from(handler, key, rule, params, state_flow, %ExFSM.Acc{} = acc, mode) do
+  defp exec_from(handler, key, rule, params, state_flow, %ExFSM.Acc{} = acc, fsm_mode) do
     t0 = System.monotonic_time()
 
     case apply(handler, :"__rule__#{rule}", [params, state_flow]) do
@@ -263,7 +263,7 @@ defmodule ExFSM.RuleEngine do
 
         acc2 = %ExFSM.Acc{acc | params: params2, state: state2, steps: [step | acc.steps]}
         ExFSM.Meta.update_acc(acc2)
-        exec_from(handler, key, next_rule, params2, state2, acc2, mode)
+        exec_from(handler, key, next_rule, params2, state2, acc2, fsm_mode)
 
       {:__exit__, payload, params2, state2, tag} ->
         step = %{

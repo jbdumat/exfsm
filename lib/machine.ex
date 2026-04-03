@@ -98,9 +98,9 @@ defmodule ExFSM.Machine do
   """
   def rules_engine(handler, state, action, params, opts \\ []) do
     key = {State.state_name(state), action}
-    mode = Keyword.get(opts, :mode, :full)
+    fsm_mode = Keyword.get(opts, :fsm_mode, :full)
 
-    case ExFSM.RuleEngine.run(handler, key, params, state, mode: mode) do
+    case ExFSM.RuleEngine.run(handler, key, params, state, fsm_mode: fsm_mode) do
       {:next_state, next, new_state, acc} ->
         {:next_state, next, State.set_state_name(new_state, next, State.handlers(new_state, params)), [acc: acc]}
 
@@ -115,7 +115,7 @@ defmodule ExFSM.Machine do
 
   @doc """
   Choisit l'engine **par clé**. Retour unifié dans tous les cas.
-  opts passées au rules_engine (ex: [mode: :full | :steps_only]).
+  opts passées au rules_engine (ex: [fsm_mode: :full | :steps_only]).
   """
   def dispatch_engine(handler, state, {action, params}, opts \\ []) do
     key = {State.state_name(state), action}

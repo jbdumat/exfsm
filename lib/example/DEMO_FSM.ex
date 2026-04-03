@@ -46,7 +46,7 @@ defmodule Example.DEMO_FSM do
   def demo_rules_error_dry_run() do
     state = %{__state__: :rules_pending_payment}
     params = %{"fail" => "fraud"}  # will fail at check_fraud
-    ExFSM.Machine.event(state, {:pay, params}, mode: :steps_only)
+    ExFSM.Machine.event(state, {:pay, params}, fsm_mode: :steps_only)
   end
 
   # 2) Replay/commit with SAME inputs returned by dry-run
@@ -54,7 +54,7 @@ defmodule Example.DEMO_FSM do
   def demo_rules_replay_error_same_inputs() do
     case demo_rules_error_dry_run() do
       {:steps_done, p, st, _ext, _acc} ->
-        ExFSM.Machine.event(st, {:pay, p}, mode: :full)
+        ExFSM.Machine.event(st, {:pay, p}, fsm_mode: :full)
 
       other ->
         other
@@ -75,7 +75,7 @@ defmodule Example.DEMO_FSM do
 
         IO.inspect {st, p2}
 
-        ExFSM.Machine.event(st, {:pay, p2}, mode: :full)
+        ExFSM.Machine.event(st, {:pay, p2}, fsm_mode: :full)
 
       other ->
         other
@@ -96,7 +96,7 @@ defmodule Example.DEMO_FSM do
   def demo_rules_dry_run(params \\ %{}) do
     state = %{__state__: :rules_pending_payment}
 
-    ExFSM.Machine.event(state, {:pay, params}, mode: :steps_only)
+    ExFSM.Machine.event(state, {:pay, params}, fsm_mode: :steps_only)
     # => {:steps_done, p, st, ext, acc}
   end
 
@@ -105,7 +105,7 @@ defmodule Example.DEMO_FSM do
     case demo_rules_dry_run(params) do
       {:steps_done, p, st, _ext, _acc} ->
         # Replay/commit with the enriched params coming from steps_only
-        ExFSM.Machine.event(st, {:pay, p}, mode: :full)
+        ExFSM.Machine.event(st, {:pay, p}, fsm_mode: :full)
 
       other ->
         other
@@ -118,7 +118,7 @@ defmodule Example.DEMO_FSM do
       {:steps_done, p, st, _ext, _acc} ->
         # Simulate "replay drift": change something after dry-run
         p2 = Map.put(p, "tampered", true)
-        ExFSM.Machine.event(st, {:pay, p2}, mode: :full)
+        ExFSM.Machine.event(st, {:pay, p2}, fsm_mode: :full)
 
       other ->
         other

@@ -5,7 +5,7 @@
 
 Il permet :
 - de **déclarer** des graphes de règles conditionnelles,
-- de **simuler** ou **exécuter** les transitions (modes `:steps_only` et `:full`),
+- de **simuler** ou **exécuter** les transitions (fsm_modes `:steps_only` et `:full`),
 - de **rejouer** partiellement des transitions (`replay` ciblé ou auto),
 - de conserver des **métadonnées complètes** (`params` initiaux, `state` initial, `delta`, `trace des steps`, `exit tags`, etc.).
 
@@ -91,13 +91,13 @@ Renvoie :
 
 ## 6. Rejeu (`replay`)
 
-Deux modes :
+Deux fsm_modes :
 
 ### a. Smart replay (auto)
 Relance automatiquement depuis la **première règle non-OK** d’un `acc` existant.
 ```elixir
 RuleEngine.replay(handler, key, base_params, external_state, acc,
-  mode: :full,
+  fsm_mode: :full,
   merge_params: %{...}
 )
 ```
@@ -107,7 +107,7 @@ RuleEngine.replay(handler, key, base_params, external_state, acc,
 ### b. Targeted replay
 ```elixir
 RuleEngine.replay(handler, key, base_params, external_state, acc,
-  mode: :full,
+  fsm_mode: :full,
   from: :b,
   params_override: %{...},
   merge_params: %{...}

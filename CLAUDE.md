@@ -23,7 +23,7 @@ ExFSM is a composable, function-based finite state machine library for Elixir. I
 - `__rules_exit__<state>_<event>/3` exit handler functions
 - A rule graph stored as `%{{state, event} => %{entry: atom, graph: %{rule => %{next: [rules]}}}}`
 
-**`lib/rule_engine.ex`** — Executes the rule graph. Two modes:
+**`lib/rule_engine.ex`** — Executes the rule graph. Two fsm_modes:
 - `:steps_only` — traverses rules, records steps in an accumulator, does not call exit handler
 - `:full` — traverses rules then calls exit handler
 - Smart replay: can re-run from the first non-ok step, or from a targeted rule

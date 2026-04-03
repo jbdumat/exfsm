@@ -7,7 +7,7 @@ defmodule ExFSM.Meta do
   Holds the initial state/params and the running `ExFSM.Acc` for the duration
   of a single `RuleEngine.run/5` or `RuleEngine.replay/6` call.
 
-  **Threading model assumption**: this module is safe only when each FSM
+  **Threading fsm_model assumption**: this module is safe only when each FSM
   execution runs within a single, dedicated process (e.g., wrapped in a
   short-lived GenServer / transactor). Concurrent calls sharing a process
   would corrupt the stored metadata.
