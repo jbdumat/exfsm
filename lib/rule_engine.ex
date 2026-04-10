@@ -1,4 +1,18 @@
 defmodule ExFSM.RuleEngine do
+  @moduledoc """
+  Executes rule graphs declared by `deftrans_rules`.
+
+  Two execution modes:
+    * `:full` — traverses all rules, then calls `defrules_exit` handler.
+      Returns `{:next_state, atom, state, acc}` or `{:error, reason, acc}`.
+    * `:steps_only` — traverses rules and records steps in the accumulator
+      without calling the exit handler. Returns `{:steps_done, params, state, ext_state, acc}`.
+
+  Also supports:
+    * `replay/6` — re-runs from the first non-ok step (or a targeted rule via `:from` option).
+    * `dry_run/2` — structural plan inspection without executing any rules.
+    * `remaining_rules/3` — returns the planned rules not yet executed.
+  """
   @type tag :: :ok | :warning | :error
 
   @spec run(module, {atom, atom}, map(), any, keyword) ::
@@ -22,13 +36,25 @@ defmodule ExFSM.RuleEngine do
             params,
             external_state,
             acc0,
-            :steps_only
+            :steps_only,
+            MapSet.new()
           )
 
         {:steps_done, acc2.params, acc2.state, external_state, acc2}
 
       :full ->
-        {acc2, proposed} = exec_from(handler, key, entry_rule!(handler, key), params, external_state, acc0, :full)
+        {acc2, proposed} =
+          exec_from(
+            handler,
+            key,
+            entry_rule!(handler, key),
+            params,
+            external_state,
+            acc0,
+            :full,
+            MapSet.new()
+          )
+
         apply_exit(handler, {state_name, event}, proposed, acc2)
     end
   end
@@ -48,21 +74,21 @@ defmodule ExFSM.RuleEngine do
       ) do
     fsm_mode = Keyword.get(opts, :fsm_mode, :full)
 
-    # Prépare params (override/merge)
+    # Prepare params (override/merge)
     params1 =
       case {Keyword.get(opts, :params_override), Keyword.get(opts, :merge_params)} do
         {nil, nil} -> base_params
         {ov, nil} when is_map(ov) -> ov
         {nil, m} when is_map(m) -> Map.merge(base_params, m)
-        # ov prioritaire, puis merge
+        # override takes priority, then merge
         {ov, m} when is_map(ov) and is_map(m) -> Map.merge(ov, m)
         _ -> base_params
       end
 
-    # Init meta avec l'external_state et les params de (re)lancement
+    # Init meta with the external_state and the (re)launch params
     ExFSM.Meta.init(external_state, params1, acc)
 
-    # Déterminer le point de reprise
+    # Determine the replay start point
     start_rule =
       case Keyword.get(opts, :from) do
         r when not is_nil(r) and is_atom(r) -> r
@@ -71,7 +97,7 @@ defmodule ExFSM.RuleEngine do
 
     cond do
       acc.exit != nil and start_rule == nil ->
-        # Déjà sorti ET rien à rejouer → juste appliquer la sortie si :full
+        # Already exited AND nothing to replay -> just apply exit if :full
         proposed = derive_next_state(acc)
 
         case fsm_mode do
@@ -80,7 +106,7 @@ defmodule ExFSM.RuleEngine do
         end
 
       true ->
-        # Applique éventuellement des params sur l'acc (si override/merge voulus)
+        # Optionally apply param overrides on the acc
         acc1 =
           if params1 != acc.params,
             do: %ExFSM.Acc{acc | params: params1},
@@ -96,7 +122,8 @@ defmodule ExFSM.RuleEngine do
                 acc1.params,
                 acc1.state,
                 acc1,
-                :steps_only
+                :steps_only,
+                MapSet.new()
               )
 
             {:steps_done, acc2.params, acc2.state, external_state, acc2}
@@ -110,7 +137,8 @@ defmodule ExFSM.RuleEngine do
                 acc1.params,
                 acc1.state,
                 acc1,
-                :full
+                :full,
+                MapSet.new()
               )
 
             apply_exit(handler, {state_name, event}, proposed, acc2)
@@ -118,28 +146,28 @@ defmodule ExFSM.RuleEngine do
     end
   end
 
-  # --------- helpers replay ---------
+  # --------- replay helpers ---------
 
-  # 1) 1ère règle à rejouer : la première avec tag != :ok (depuis le début)
-  # steps est stocké "newest first" (on cons au head)
+  # First rule to replay: the first with tag != :ok (from the start).
+  # Steps are stored newest-first (consed to head).
   defp pick_replay_start_rule(%ExFSM.Acc{steps: []}), do: nil
 
-  # 1) Cas le plus fréquent: on a déjà quitté par une règle non-ok (chosen: :exit)
+  # Most common case: already exited via a non-ok rule (chosen: :exit)
   defp pick_replay_start_rule(%ExFSM.Acc{steps: [%{chosen: :exit, rule: r} | _]}), do: r
 
   defp pick_replay_start_rule(%ExFSM.Acc{steps: steps} = _acc) do
-    # plus ancien -> plus récent
+    # oldest -> newest
     chrono = Enum.reverse(steps)
 
-    # 2) Première règle non-ok en ordre chronologique
+    # First non-ok rule in chronological order
     case Enum.find(chrono, fn step -> step.tag != :ok end) do
       %{rule: r} ->
         r
 
       nil ->
-        # 3) Tout était ok et pas d'exit -> on tente la "prochaine" après la dernière
+        # Everything was ok and no exit -> try the "next" after the last rule
         case List.last(chrono) do
-          # si la dernière a choisi une autre règle, on repart de celle-ci
+          # if the last step chose another rule, restart from it
           %{chosen: r} when is_atom(r) and r != :exit -> r
           _ -> nil
         end
@@ -166,22 +194,22 @@ defmodule ExFSM.RuleEngine do
   end
 
   @doc """
-  Steps “restants” selon le plan nominal (plan – rules :ok déjà passées).
+  Remaining steps according to the nominal plan (plan minus already-ok rules).
   """
   def remaining_rules(state, {_st, ev} = key, rules_applied) do
-    # 1/ resolve handler pour être sûr du module
+    # 1/ resolve handler to be sure of the module
     handler =
       ExFSM.Machine.find_handlers({state, ev, %{}}) |> List.first() ||
         raise ArgumentError, "No handler for #{inspect(key)}"
 
-    # 3/ Si aucune règle exécutée : plan complet depuis l'entry
+    # 3/ If no rules were executed: full plan from the entry
     case rules_applied do
       [] ->
         %{entry: entry} = Map.fetch!(handler.rules_graph(), key)
         plan_from(handler, key, entry)
 
       applied when is_list(applied) ->
-        # Dernière règle « réussie » (ok/warn) — on tolère warn comme progression
+        # Last successful rule (ok/warn) -- warn is tolerated as progression
         last =
           applied
           |> Enum.reverse()
@@ -189,16 +217,14 @@ defmodule ExFSM.RuleEngine do
 
         cond do
           is_nil(last) ->
-            # Seules des erreurs/exit : on repart de l’entry
             %{entry: entry} = Map.fetch!(handler.rules_graph(), key)
             plan_from(handler, key, entry)
 
           true ->
-            # Si le step a un chosen, on repart de ce chosen
-            from_rule = last[:chosen] || last[:rule]
+            from_rule = Map.get(last, :chosen) || Map.get(last, :rule)
             full = plan_from(handler, key, from_rule)
 
-            # Éliminer les nodes déjà "ok/warn" après ce point
+            # Remove nodes already "ok/warn" after this point
             done_ok =
               applied
               |> Enum.filter(&(&1.tag in [:ok, :warn]))
@@ -213,7 +239,7 @@ defmodule ExFSM.RuleEngine do
   # -------- Dry Run ----------
 
   @doc """
-  Dry-run structurel : ne touche pas aux rules, renvoie seulement plan, graph et entry.
+  Structural dry-run: does not execute rules, returns only plan, graph and entry.
   """
   @spec dry_run(module, {atom, atom}) :: {:ok, %{plan: [atom], graph: map, entry: atom}}
   def dry_run(mod, key) do
@@ -226,7 +252,16 @@ defmodule ExFSM.RuleEngine do
 
   # -------- core ----------
 
-  defp exec_from(_handler, key, :exit, params, state_flow, %ExFSM.Acc{} = acc, _fsm_mode) do
+  defp exec_from(
+         _handler,
+         key,
+         :exit,
+         params,
+         state_flow,
+         %ExFSM.Acc{} = acc,
+         _fsm_mode,
+         _visited
+       ) do
     exit_val =
       case acc.exit do
         nil ->
@@ -247,7 +282,14 @@ defmodule ExFSM.RuleEngine do
     {acc2, derive_next_state(acc2)}
   end
 
-  defp exec_from(handler, key, rule, params, state_flow, %ExFSM.Acc{} = acc, fsm_mode) do
+  defp exec_from(handler, key, rule, params, state_flow, %ExFSM.Acc{} = acc, fsm_mode, visited) do
+    if MapSet.member?(visited, rule) do
+      raise ArgumentError,
+            "Cycle detected in #{inspect(key)}: rule #{inspect(rule)} was already visited. " <>
+              "Visited rules: #{inspect(MapSet.to_list(visited))}"
+    end
+
+    visited = MapSet.put(visited, rule)
     t0 = System.monotonic_time()
 
     case apply(handler, :"__rule__#{rule}", [params, state_flow]) do
@@ -258,12 +300,12 @@ defmodule ExFSM.RuleEngine do
           in: %{params: params, state: acc.state},
           out: %{params: params2, state: state2},
           chosen: next_rule,
-          time_ms: dt_ms(t0)
+          time_us: dt_us(t0)
         }
 
         acc2 = %ExFSM.Acc{acc | params: params2, state: state2, steps: [step | acc.steps]}
         ExFSM.Meta.update_acc(acc2)
-        exec_from(handler, key, next_rule, params2, state2, acc2, fsm_mode)
+        exec_from(handler, key, next_rule, params2, state2, acc2, fsm_mode, visited)
 
       {:__exit__, payload, params2, state2, tag} ->
         step = %{
@@ -272,7 +314,7 @@ defmodule ExFSM.RuleEngine do
           in: %{params: params, state: acc.state},
           out: %{params: params2, state: state2},
           chosen: :exit,
-          time_ms: dt_ms(t0)
+          time_us: dt_us(t0)
         }
 
         acc2 = %ExFSM.Acc{
@@ -308,16 +350,23 @@ defmodule ExFSM.RuleEngine do
 
       true ->
         case apply(handler, out_fun, [acc.params, acc.state, proposed_next_state]) do
-          {:next_state, name, new_external_state} -> {:next_state, name, new_external_state, acc}
-          {:keep_state, name, same_external_state} -> {:keep_state, name, same_external_state, acc}
-          {:error, reason} -> {:error, reason, acc}
-          other -> {:error, {:invalid_rules_exit_return, other}, acc}
+          {:next_state, name, new_external_state} ->
+            {:next_state, name, new_external_state, acc}
+
+          {:keep_state, name, same_external_state} ->
+            {:keep_state, name, same_external_state, acc}
+
+          {:error, reason} ->
+            {:error, reason, acc}
+
+          other ->
+            {:error, {:invalid_rules_exit_return, other}, acc}
         end
     end
   end
 
-  defp dt_ms(t0),
-    do: System.convert_time_unit(System.monotonic_time() - t0, :native, :millisecond)
+  defp dt_us(t0),
+    do: System.convert_time_unit(System.monotonic_time() - t0, :native, :microsecond)
 
   # ---- runtime plannification helpers ----------------------------------------
   defp plan_path(graph, weights, entry) do

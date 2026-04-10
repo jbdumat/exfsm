@@ -1,19 +1,18 @@
 defmodule ExFSM.AccJSON do
   @moduledoc """
-  Encodage d'un ou plusieurs %ExFSM.Acc{} vers un format JSON-safe
-  pour la visualisation ExFSM.
+  Encodes one or more `%ExFSM.Acc{}` into a JSON-safe format
+  for ExFSM visualization.
 
-  Hypothèse:
-    - chaque acc contient déjà un champ :transition ou "transition"
-      de la forme {:state, :event} ou ["state","event"].
+  Assumption: each acc already contains a `:transition` or `"transition"` field
+  of the form `{:state, :event}` or `["state", "event"]`.
   """
 
   @type acc :: %ExFSM.Acc{} | map()
 
   @doc """
-  Encode un acc unique en map JSON-safe.
+  Encodes a single acc into a JSON-safe map.
 
-  Résultat typique:
+  Typical result:
 
       %{
         "steps"      => [...],
@@ -26,40 +25,44 @@ defmodule ExFSM.AccJSON do
   @spec encode(acc) :: map()
   def encode(%ExFSM.Acc{} = acc) do
     base = %{
-      "steps"      => Enum.map(acc.steps, &encode_step/1),
-      "state"      => encode_value(acc.state),
-      "params"     => encode_value(acc.params),
-      "exit"       => encode_exit(acc.exit)
+      "steps" => Enum.map(acc.steps, &encode_step/1),
+      "state" => encode_value(acc.state),
+      "params" => encode_value(acc.params),
+      "exit" => encode_exit(acc.exit)
     }
 
     case extract_transition(acc) do
-      nil        -> base
+      nil -> base
       transition -> Map.put(base, "transition", transition)
     end
   end
 
-  # Si jamais tu veux aussi encoder un acc "raw" déjà mapifié
+  # Also encodes a "raw" acc that is already a plain map
   def encode(%{} = acc_map) do
     base = %{
-      "steps"      => acc_map |> Map.get(:steps)  |> encode_steps(),
-      "state"      => acc_map |> Map.get(:state)  |> encode_value(),
-      "params"     => acc_map |> Map.get(:params) |> encode_value(),
-      "exit"       => acc_map |> Map.get(:exit)   |> encode_exit()
+      "steps" => acc_map |> Map.get(:steps) |> encode_steps(),
+      "state" => acc_map |> Map.get(:state) |> encode_value(),
+      "params" => acc_map |> Map.get(:params) |> encode_value(),
+      "exit" => acc_map |> Map.get(:exit) |> encode_exit()
     }
 
     case extract_transition(acc_map) do
-      nil        -> base
+      nil -> base
       transition -> Map.put(base, "transition", transition)
     end
   end
 
+  def encode(other) do
+    raise ArgumentError,
+          "ExFSM.AccJSON.encode/1 expects %ExFSM.Acc{} or a map, got: #{inspect(other)}"
+  end
+
   @doc """
-  Encode une liste d'accs successifs.
+  Encodes a list of successive accs.
 
-  Entrée:
-      [acc1, acc2, acc3, ...]
+  Input: `[acc1, acc2, acc3, ...]`
 
-  Sortie JSON (via Poison.encode!/1):
+  Output (JSON-safe):
 
       [
         %{...encoded acc1...},
@@ -67,7 +70,7 @@ defmodule ExFSM.AccJSON do
         ...
       ]
 
-  L'ordre dans la liste est l'ordre des transitions.
+  List order matches the order of transitions.
   """
   @spec encode_chain([acc]) :: [map()]
   def encode_chain(accs) when is_list(accs) do
@@ -75,7 +78,7 @@ defmodule ExFSM.AccJSON do
   end
 
   # ------------------------------------------------------------------
-  # helpers internes
+  # Internal helpers
   # ------------------------------------------------------------------
 
   ## steps
@@ -92,27 +95,27 @@ defmodule ExFSM.AccJSON do
   ## exit
 
   defp encode_exit({tag, val}), do: [Atom.to_string(tag), encode_value(val)]
-  defp encode_exit(nil),        do: nil
-  defp encode_exit(other),      do: other
+  defp encode_exit(nil), do: nil
+  defp encode_exit(other), do: other
 
   ## transition
 
-  # supporte :transition ou "transition" dans l'acc
+  # Supports :transition or "transition" key in the acc
   defp extract_transition(acc) do
     t = Map.get(acc, :transition) || Map.get(acc, "transition")
 
     case t do
-      nil           -> nil
-      {s, e}        -> [encode_atom(s), encode_atom(e)]
-      [s, e]        -> [encode_atom(s), encode_atom(e)]
-      [s, e | _]    -> [encode_atom(s), encode_atom(e)]
-      other         -> raise ArgumentError, "invalid transition: #{inspect(other)}"
+      nil -> nil
+      {s, e} -> [encode_atom(s), encode_atom(e)]
+      [s, e] -> [encode_atom(s), encode_atom(e)]
+      [s, e | _] -> [encode_atom(s), encode_atom(e)]
+      other -> raise ArgumentError, "invalid transition: #{inspect(other)}"
     end
   end
 
-  ## generic value
+  ## Generic value encoding
 
-  defp encode_value(v) when is_atom(v),  do: encode_atom(v)
+  defp encode_value(v) when is_atom(v), do: encode_atom(v)
 
   defp encode_value(v) when is_map(v) do
     v
@@ -120,10 +123,9 @@ defmodule ExFSM.AccJSON do
     |> Map.new()
   end
 
-  defp encode_value(v) when is_list(v),  do: Enum.map(v, &encode_value/1)
-  defp encode_value(v),                  do: v
+  defp encode_value(v) when is_list(v), do: Enum.map(v, &encode_value/1)
+  defp encode_value(v), do: v
 
   defp encode_atom(a) when is_atom(a), do: Atom.to_string(a)
-  defp encode_atom(a),                 do: a
-
+  defp encode_atom(a), do: a
 end

@@ -2,8 +2,10 @@
 
 defmodule ExFSM.Machine do
   @moduledoc """
-  Glue pour exécuter des transitions rules-based.
-  Supporte un protocole `State` basé sur `handlers(state, params)`.
+  Dispatch layer for executing FSM transitions.
+
+  Supports a `State` protocol based on `handlers(state, params)`.
+  Routes to the rule engine (for `deftrans_rules`) or classic engine (for `deftrans`).
   """
 
   defprotocol State do
@@ -42,7 +44,7 @@ defmodule ExFSM.Machine do
   def fsm(handlers) when is_list(handlers), do: transition_map(handlers, :fsm)
 
   # -----------------------------
-  # Détection rule-graph par clé
+  # Rule-graph detection by key
   # -----------------------------
   defp supports_rules_key?(handler, key) do
     cond do
@@ -66,24 +68,25 @@ defmodule ExFSM.Machine do
   end
 
   # -----------------------------
-  # Engines (formes unifiées)
+  # Engines (unified forms)
   # -----------------------------
   @doc """
-  Engine classique (deftrans). Retour unifié:
-  {:next_state, next, state2, [timeout: integer() | nil]}
+  Classic engine (deftrans). Unified return:
+  `{:next_state, next, state2, [timeout: integer() | nil]}`
   """
   def classic_engine(handler, state, {action, params}) do
-
     case apply(handler, State.state_name(state), [{action, params}, state]) do
       {:next_state, next, state2, timeout} ->
-        {:next_state, next, State.set_state_name(state2, next, State.handlers(state2, params)), [timeout: timeout]}
+        {:next_state, next, State.set_state_name(state2, next, State.handlers(state2, params)),
+         [timeout: timeout]}
 
       {:next_state, next, state2} ->
-        {:next_state, next, State.set_state_name(state2, next, State.handlers(state2, params)), []}
+        {:next_state, next, State.set_state_name(state2, next, State.handlers(state2, params)),
+         []}
 
       {:keep_state, state2} ->
-        # On reste cohérent: retourne next_state = nom courant (ou celui de state2 s’il a changé)
-        next = Map.get(state2, :__state__, State.state_name(state))
+        # Stay consistent: return next_state = current name (or state2’s if changed)
+        next = State.state_name(state2)
         {:next_state, next, state2, [keep: true]}
 
       other ->
@@ -92,9 +95,9 @@ defmodule ExFSM.Machine do
   end
 
   @doc """
-  Engine RuleEngine (deftrans_rules). Retour unifié:
-  {:next_state, next, state2, [acc: %ExFSM.Acc{}, timeout: nil]}
-  En :steps_only -> retourne le tuple steps_only tel quel (on ne rabat pas).
+  Rule engine (deftrans_rules). Unified return:
+  `{:next_state, next, state2, [acc: %ExFSM.Acc{}, timeout: nil]}`
+  In `:steps_only` mode, returns the steps_only tuple as-is.
   """
   def rules_engine(handler, state, action, params, opts \\ []) do
     key = {State.state_name(state), action}
@@ -102,10 +105,11 @@ defmodule ExFSM.Machine do
 
     case ExFSM.RuleEngine.run(handler, key, params, state, fsm_mode: fsm_mode) do
       {:next_state, next, new_state, acc} ->
-        {:next_state, next, State.set_state_name(new_state, next, State.handlers(new_state, params)), [acc: acc]}
+        {:next_state, next,
+         State.set_state_name(new_state, next, State.handlers(new_state, params)), [acc: acc]}
 
       {:steps_done, p, st, ext, acc} ->
-        # On laisse au call-site décider comment utiliser steps_only.
+        # Let the call-site decide how to use steps_only.
         {:steps_done, p, st, ext, acc}
 
       other ->
@@ -114,8 +118,8 @@ defmodule ExFSM.Machine do
   end
 
   @doc """
-  Choisit l'engine **par clé**. Retour unifié dans tous les cas.
-  opts passées au rules_engine (ex: [fsm_mode: :full | :steps_only]).
+  Selects the engine **by key**. Unified return in all cases.
+  `opts` are passed to the rules_engine (e.g., `[fsm_mode: :full | :steps_only]`).
   """
   def dispatch_engine(handler, state, {action, params}, opts \\ []) do
     key = {State.state_name(state), action}
@@ -132,22 +136,19 @@ defmodule ExFSM.Machine do
     end
   end
 
-  # -----------------------------
-  # Bypasses
-  # -----------------------------
+  # ----------- Bypasses -----------
   def event_bypasses(handlers) when is_list(handlers),
     do: transition_map(handlers, :event_bypasses)
 
-  # -----------------------------
-  # Entry point unifié
-  # -----------------------------
+  # ----------- Unified entry point -----------
   @doc """
-  Applique {action, params} à `state` via le handler résolu, en renvoyant
-  **toujours** la forme unifiée:
+  Applies `{action, params}` to `state` via the resolved handler, always returning
+  the unified form:
 
       {:next_state, next_state_atom, new_state, opts_kw}
 
-  Cas steps_only côté RuleEngine:
+  In RuleEngine `:steps_only` mode:
+
       {:steps_done, params, state, external_state, acc}
   """
   def event(state, {action, params}, opts \\ []) do
@@ -165,14 +166,12 @@ defmodule ExFSM.Machine do
                 {:next_state, next, state2, [keep: true, timeout: nil, acc: nil]}
 
               {:next_state, next, state2, timeout} ->
-                {:next_state,
-                 next,
+                {:next_state, next,
                  State.set_state_name(state2, next, State.handlers(state2, params)),
                  [timeout: timeout, acc: nil]}
 
               {:next_state, next, state2} ->
-                {:next_state,
-                 next,
+                {:next_state, next,
                  State.set_state_name(state2, next, State.handlers(state2, params)),
                  [timeout: nil, acc: nil]}
 
@@ -186,7 +185,7 @@ defmodule ExFSM.Machine do
     end
   end
 
-  @spec find_handlers({state_name::atom,event_name::atom},[exfsm_module :: atom]) :: exfsm_module :: atom
+  @spec find_handlers({state_name :: atom, event_name :: atom}, [exfsm_module :: atom]) :: [atom]
   def find_handlers({state_name, action}, handlers) when is_list(handlers) do
     case Map.get(fsm(handlers), {state_name, action}) do
       {h, _} -> [h]
@@ -198,6 +197,7 @@ defmodule ExFSM.Machine do
   @doc "same as `find_handlers/2` but using a 'meta' state implementing `ExFSM.Machine.State` and filter if a 'match_trans' is available"
   def find_handlers({state, action, params}) do
     state_name = State.state_name(state)
+
     find_handlers({state_name, action}, State.handlers(state, params))
     |> Enum.filter(fn handler -> handler.match_trans(state_name, action, state, params) end)
   end
@@ -220,22 +220,26 @@ defmodule ExFSM.Machine do
     state_name = State.state_name(state)
     handlers = State.handlers(state, params)
 
-    classic_actions = ExFSM.Machine.fsm(handlers)
-      |> Enum.filter(fn {{from,_},_} -> from == state_name end)
-      |> Enum.map(fn {{_,action},_} -> action end)
+    classic_actions =
+      ExFSM.Machine.fsm(handlers)
+      |> Enum.filter(fn {{from, _}, _} -> from == state_name end)
+      |> Enum.map(fn {{_, action}, _} -> action end)
 
     bypass_actions = ExFSM.Machine.event_bypasses(handlers) |> Map.keys()
 
-    rules_actions = handlers |> Enum.map(fn handler ->
-      if function_exported?(handler, :rules_graph, 0) do
-        handler.rules_graph()
-        |> Map.keys()
-        |> Enum.filter(fn {s,_} -> s == state_name end)
-        |> Enum.map(fn {_, action} -> action end)
-      else
-        []
-      end
-    end) |> List.flatten()
+    rules_actions =
+      handlers
+      |> Enum.map(fn handler ->
+        if function_exported?(handler, :rules_graph, 0) do
+          handler.rules_graph()
+          |> Map.keys()
+          |> Enum.filter(fn {s, _} -> s == state_name end)
+          |> Enum.map(fn {_, action} -> action end)
+        else
+          []
+        end
+      end)
+      |> List.flatten()
 
     Enum.uniq(classic_actions ++ rules_actions ++ bypass_actions)
   end
@@ -248,11 +252,11 @@ defmodule ExFSM.Machine do
   def infos(handlers) when is_list(handlers),
     do: handlers |> Enum.map(& &1.docs) |> Enum.concat() |> Enum.into(%{})
 
-  def infos(state, params), do:
-    infos(State.handlers(state, params))
+  def infos(state, params), do: infos(State.handlers(state, params))
 
   def find_info(state, params, action) do
     docs = infos(state, params)
+
     if doc = docs[{:transition_doc, State.state_name(state), action}] do
       {:known_transition, doc}
     else

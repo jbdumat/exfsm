@@ -1,41 +1,39 @@
 defmodule ExFSM.Visualizer do
   @moduledoc """
-  Visualisation Mermaid minimaliste pour ExFSM, **sans modifier le DSL**.
+  Minimal Mermaid visualization for ExFSM, **without modifying the DSL**.
 
-  Idées de base :
+  Design:
 
-  - Global :
-      * un subgraph par transition `{state, event}`
-      * chaque rule `r` flèche ses `next_rule` (d'après `rules_graph/0`)
-      * les transitions sont chainées entre elles par une flèche
-        `entry(state_i,event_i) -.-> entry(state_j,event_j)` dans un ordre donné.
+  - Global view:
+      * one subgraph per transition `{state, event}`
+      * each rule `r` has edges to its `next_rule` (from `rules_graph/0`)
+      * transitions are chained via dotted arrows
+        `entry(state_i,event_i) -.-> entry(state_j,event_j)` in a given order.
 
-  - Contexte :
-      * même représentation globale
-      * si on fournit un accumulateur :
-          - soit un seul `acc` (une transition)
-          - soit une map `%{{state,event} => acc, ...}` pour un même objet FSM
-        alors :
-          - les arêtes réellement parcourues sont colorées :
-              :ok      -> vert
-              :warning -> jaune
-              :error   -> rouge
-          - le reste (rules / transitions non traversées) reste en style par défaut
-            => "reste à faire" visible naturellement.
+  - Context view:
+      * same global layout
+      * with an accumulator:
+          - a single `acc` (one transition)
+          - or a map `%{{state,event} => acc, ...}` for the same FSM object
+        then:
+          - actually-traversed edges are colored:
+              `:ok`      -> green
+              `:warning` -> yellow
+              `:error`   -> red
+          - untraversed rules/transitions keep default style (naturally showing "remaining work").
 
-  Aucun changement à ExFSM :
-  - on n'exige ni macros de tagging, ni modifications de `next_rule`.
+  No changes to ExFSM required — no tagging macros or `next_rule` modifications needed.
   """
 
   @type handler :: module()
   @type key :: {atom(), atom()}
 
   # Couleurs
-  @c_ok       "#10b981"
-  @c_warn     "#f59e0b"
-  @c_error    "#ef4444"
-  @c_entry    "#3b82f6"
-  @c_node_st  "#374151"
+  @c_ok "#10b981"
+  @c_warn "#f59e0b"
+  @c_error "#ef4444"
+  @c_entry "#3b82f6"
+  @c_node_st "#374151"
   @c_node_txt "#111827"
 
   # =====================================================================================
@@ -43,19 +41,19 @@ defmodule ExFSM.Visualizer do
   # =====================================================================================
 
   @doc """
-  Visu globale :
+  Global visualization:
 
-  - un subgraph par `{state,event}`
-  - chaque rule flèche ses `next_rule`
-  - les transitions sont chaînées dans l'ordre choisi.
+  - one subgraph per `{state, event}`
+  - each rule has edges to its `next_rule`
+  - transitions are chained in the chosen order.
 
-  `opts` :
-    * `:order` – liste explicite de clés `{state,event}` pour le chainage.
-                 À défaut : tri alphabétique par `{state,event}`.
+  `opts`:
+    * `:order` -- explicit list of `{state, event}` keys for chaining.
+                   Defaults to alphabetical sort.
   """
   @spec mermaid_global(handler, keyword) :: String.t()
   def mermaid_global(handler, opts \\ []) do
-    rg    = handler.rules_graph()
+    rg = handler.rules_graph()
     order = pick_order(rg, Keyword.get(opts, :order))
 
     {subgraphs, keyed_edges} =
@@ -73,39 +71,39 @@ defmodule ExFSM.Visualizer do
       |> Enum.chunk_every(2, 1, :discard)
       |> Enum.flat_map(fn [k1, k2] ->
         chain_edges_between(rg, k1, k2)
-        |> Enum.map(&elem(&1, 0))   # on ne garde que la ligne Mermaid
+        # on ne garde que la ligne Mermaid
+        |> Enum.map(&elem(&1, 0))
       end)
 
     ["flowchart LR" | subgraphs ++ chain_edges]
     |> Enum.join("\n")
   end
 
-
   @doc """
-  Visu contexte :
+  Context visualization:
 
-  - Sans accumulateur (`acc_or_map = nil`) :
-      * identique à `mermaid_global/2`.
+  - Without accumulator (`acc_or_map = nil`):
+      * identical to `mermaid_global/2`.
 
-  - Avec `acc` simple (une transition) :
-      * détection de la clé `{state,event}` via :
+  - With a single `acc` (one transition):
+      * key `{state, event}` detected via:
           - `acc.meta.transition`
-          - ou overlap des rules présentes dans `acc.steps`
-      * FSM complète affichée
-      * arêtes de cette transition colorées selon `steps[*].tag`.
+          - or overlap of rules present in `acc.steps`
+      * full FSM displayed
+      * edges of this transition colored by `steps[*].tag`.
 
-  - Avec map d'accumulateurs :
-      * `acc_or_map` = `%{{state,event} => acc, ...}` (ou clé `[state,event]` ou converted)
-      * FSM complète affichée
-      * toutes les transitions présentes dans la map sont colorées selon leurs `steps`.
+  - With a map of accumulators:
+      * `acc_or_map` = `%{{state,event} => acc, ...}`
+      * full FSM displayed
+      * all transitions present in the map are colored by their `steps`.
 
-  `opts` :
-    * `:key`   – force la clé de focus pour l'acc simple
-    * `:order` – comme pour `mermaid_global/2`
+  `opts`:
+    * `:key`   -- forces the focus key for a single acc
+    * `:order` -- same as `mermaid_global/2`
   """
   @spec mermaid_context(handler, map() | nil, keyword) :: String.t()
   def mermaid_context(handler, acc_or_map \\ nil, opts \\ []) do
-    rg    = handler.rules_graph()
+    rg = handler.rules_graph()
     order = pick_order(rg, Keyword.get(opts, :order))
 
     {subgraphs, keyed_edges} =
@@ -158,9 +156,9 @@ defmodule ExFSM.Visualizer do
   # SUBGRAPHS & EDGES
   # =====================================================================================
 
-  # Retourne {snippet, edges}, edges = [{key, from, to}] dans l'ordre d'émission.
+  # Returns {snippet, edges}, edges = [{key, from, to}] in emission order.
   defp subgraph_snippet(key = {state, event}, %{entry: entry, graph: g}) do
-    header     = "subgraph #{state} - #{event}"
+    header = "subgraph #{state} - #{event}"
     decl_entry = "  " <> node_decl(key, entry)
 
     {edge_lines, edges} =
@@ -193,8 +191,8 @@ defmodule ExFSM.Visualizer do
   defp node_id({state, event}, rule),
     do: "n_#{state}_#{event}_#{rule}"
 
-  # Génère toutes les flèches terminal(rule) -.-> entry(next_transition)
-  # et retourne {line, {key_source, rule_source}} pour pouvoir les styler ensuite.
+  # Generates all terminal(rule) -.-> entry(next_transition) edges
+  # and returns {line, {key_source, rule_source}} for styling.
   defp chain_edges_between(rules_graph, key1, key2) do
     %{entry: entry2} = Map.fetch!(rules_graph, key2)
     t_rules = terminal_rules(Map.fetch!(rules_graph, key1))
@@ -237,21 +235,24 @@ defmodule ExFSM.Visualizer do
         |> Enum.map(&normalize_step/1)
         |> Enum.flat_map(fn %{rule: r, tag: t, chosen: ch} ->
           case ch do
-            nil   -> []
-            :exit -> []    # pas d’edge interne vers :exit
-            nxt   -> [{{key, r, nxt}, t}]
+            nil -> []
+            # pas d’edge interne vers :exit
+            :exit -> []
+            nxt -> [{{key, r, nxt}, t}]
           end
         end)
         |> Enum.map(fn {{edge_key, from, to}, tag} ->
           case Map.get(edge_index, {edge_key, from, to}) do
-            nil -> nil
+            nil ->
+              nil
+
             idx ->
               color =
                 case tag do
-                  :ok      -> @c_ok
+                  :ok -> @c_ok
                   :warning -> @c_warn
-                  :error   -> @c_error
-                  _        -> @c_ok
+                  :error -> @c_error
+                  _ -> @c_ok
                 end
 
               "linkStyle #{idx} stroke:#{color},stroke-width:3px,opacity:1"
@@ -260,7 +261,7 @@ defmodule ExFSM.Visualizer do
         |> Enum.reject(&is_nil/1)
       end)
 
-    # nodes d’entrée des transitions parcourues
+    # Entry nodes of traversed transitions
     entry_map =
       rules_graph
       |> Enum.map(fn {k, %{entry: e}} -> {k, e} end)
@@ -271,14 +272,14 @@ defmodule ExFSM.Visualizer do
       |> Map.keys()
       |> Enum.map(fn key ->
         case Map.get(entry_map, key) do
-          nil   -> nil
+          nil -> nil
           entry -> style_node(key, entry, @c_entry)
         end
       end)
       |> Enum.reject(&is_nil/1)
 
-    # 2) edges inter-transitions (pointillés)
-    # elles viennent APRES toutes les arêtes internes
+    # 2) Inter-transition edges (dashed)
+    # They come AFTER all internal edges
     cross_base_idx = length(all_edges)
 
     link_styles_cross =
@@ -291,16 +292,16 @@ defmodule ExFSM.Visualizer do
           acc_src ->
             case step_tag_for_exit_rule(acc_src, rule_src) do
               nil ->
-                # règle terminale non empruntée -> pas de style
+                # Terminal rule not taken -> no style
                 nil
 
               tag ->
                 color =
                   case tag do
-                    :ok      -> @c_ok
+                    :ok -> @c_ok
                     :warning -> @c_warn
-                    :error   -> @c_error
-                    _        -> @c_ok
+                    :error -> @c_error
+                    _ -> @c_ok
                   end
 
                 idx = cross_base_idx + idx_local
@@ -326,15 +327,15 @@ defmodule ExFSM.Visualizer do
 
   defp normalize_step(%{} = step) do
     %{
-      rule:   get_atom(step, :rule),
-      tag:    get_atom(step, :tag),
+      rule: get_atom(step, :rule),
+      tag: get_atom(step, :tag),
       chosen: get_atom(step, :chosen)
     }
   end
 
   defp get_atom(map, key) do
     case Map.get(map, key) || Map.get(map, to_string(key)) do
-      a when is_atom(a)   -> a
+      a when is_atom(a) -> a
       s when is_binary(s) -> String.to_atom(s)
       _ -> nil
     end
@@ -344,7 +345,7 @@ defmodule ExFSM.Visualizer do
   # HELPERS POUR ACC SIMPLE / MULTI
   # =====================================================================================
 
-  # Heuristique : multi acc map si toutes les keys ressemblent à une clé de FSM
+  # Heuristic: multi acc map if all keys look like FSM keys
   # ({state,event} ou [state,event]).
   defp multi_acc_map?(acc) when is_map(acc) do
     acc
@@ -352,7 +353,7 @@ defmodule ExFSM.Visualizer do
     |> Enum.all?(fn
       {_, _} -> true
       [_, _] -> true
-      _      -> false
+      _ -> false
     end)
   end
 
@@ -371,23 +372,27 @@ defmodule ExFSM.Visualizer do
     |> Map.new()
   end
 
-  defp to_atom(x) when is_atom(x),   do: x
+  defp to_atom(x) when is_atom(x), do: x
   defp to_atom(x) when is_binary(x), do: String.to_atom(x)
-  defp to_atom(x),                   do: x
+  defp to_atom(x), do: x
 
-  # Choix de la clé pour un acc simple
+  # Key selection for a single acc
   defp acc_focus_key(rules_graph, _acc, explicit_key) when not is_nil(explicit_key) do
     case explicit_key do
       {s, e} when is_atom(s) and is_atom(e) -> {s, e}
-      [s, e]                                -> {to_atom(s), to_atom(e)}
-      _                                     -> hd(Map.keys(rules_graph))
+      [s, e] -> {to_atom(s), to_atom(e)}
+      _ -> hd(Map.keys(rules_graph))
     end
   end
 
   defp acc_focus_key(rules_graph, acc, nil) do
     case get_in(acc, ["meta", "transition"]) || get_in(acc, [:meta, :transition]) do
-      [s, e] when is_binary(s) and is_binary(e) -> {String.to_atom(s), String.to_atom(e)}
-      {s, e} when is_atom(s) and is_atom(e)     -> {s, e}
+      [s, e] when is_binary(s) and is_binary(e) ->
+        {String.to_atom(s), String.to_atom(e)}
+
+      {s, e} when is_atom(s) and is_atom(e) ->
+        {s, e}
+
       _ ->
         # fallback par overlap de rules
         seen =
@@ -405,6 +410,7 @@ defmodule ExFSM.Visualizer do
             |> MapSet.new()
             |> MapSet.intersection(seen)
             |> MapSet.size()
+
           {k, overlap}
         end)
         |> Enum.max_by(&elem(&1, 1), fn -> {hd(Map.keys(rules_graph)), -1} end)
@@ -425,9 +431,9 @@ defmodule ExFSM.Visualizer do
     end)
   end
 
-  # Rules "terminales" pour une transition :
-  # - soit next == []
-  # - soit next contient :exit
+  # Terminal rules for a transition:
+  # - next == []
+  # - or next contains :exit
   defp terminal_rules(%{graph: g}) do
     g
     |> Enum.flat_map(fn {rule, %{next: nexts}} ->
