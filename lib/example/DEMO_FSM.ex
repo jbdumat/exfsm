@@ -78,11 +78,11 @@ defmodule Example.DEMO_FSM do
   # ExFSM v2 (rules)
   # ----------------------------------------------------------------------------
 
-  deftrans_rules rules_pending_payment({:pay, _}, state) do
-    defrule check_payment(params, state) do
-      case check_payment(state, params) do
-        :ok -> next_rule({:check_fraud, params, state}, :ok)
-        :error -> rules_exit(:check_payment_error, params, state, :error)
+  deftrans_rules rules_pending_payment(:pay) do
+    defrule check_payment(toto, titi) do
+      case check_payment(titi, toto) do
+        :ok -> next_rule({:check_fraud, toto, titi}, :ok)
+        :error -> rules_exit(:check_payment_error, toto, titi, :error)
       end
     end
 

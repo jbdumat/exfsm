@@ -33,6 +33,8 @@ defmodule ExFSM do
       @current_ruleset nil
       @entry_rule nil
       @weights %{}
+      @current_rule_params_var nil
+      @current_rule_state_var nil
 
       @before_compile ExFSM
     end
@@ -79,21 +81,14 @@ defmodule ExFSM do
         {:{}, _, [r_ast, p_ast, s_ast]} ->
           {r_ast, p_ast, s_ast}
 
-        # {:rule, params}
-        {:{}, _, [r_ast, p_ast]} ->
-          {r_ast, p_ast, Macro.var(:state, nil)}
-
-        # keyword form [rule: params]
-        [{r_atom, p_ast}] when is_atom(r_atom) ->
-          {r_atom, p_ast, Macro.var(:state, nil)}
-
-        # tuple “plat” {rule, params, state}
+        # flat tuple {rule, params, state}
         {r_ast, p_ast, s_ast} ->
           {r_ast, p_ast, s_ast}
 
         other ->
           raise ArgumentError,
-                "next_rule expects {:rule, params, state} or {:rule, params}, got: #{Macro.to_string(other)}"
+                ~s[next_rule requires explicit params and state: {:rule, params, state}, got: ] <>
+                  Macro.to_string(other)
       end
 
     quote do
@@ -102,8 +97,8 @@ defmodule ExFSM do
   end
 
   # ------------------------------------------------------
-  # rules_exit(payload, params_override \\ var!(params),
-  #            state_override \\ var!(state), tag \\ :ok)
+  # rules_exit(payload, params_override \\ <current rule params var>,
+  #            state_override \\ <current rule state var>, tag \\ :ok)
   # ------------------------------------------------------
   defmacro rules_exit(
              payload_ast,
@@ -111,9 +106,21 @@ defmodule ExFSM do
              state_override_ast \\ nil,
              tag_ast \\ :ok
            ) do
+    # Resolve defaults at macro-expansion time so no spurious variable
+    # references appear in the generated code when overrides are explicit.
+    params_expr =
+      params_override_ast ||
+        Module.get_attribute(__CALLER__.module, :current_rule_params_var) ||
+        Macro.var(:params, nil)
+
+    state_expr =
+      state_override_ast ||
+        Module.get_attribute(__CALLER__.module, :current_rule_state_var) ||
+        Macro.var(:state, nil)
+
     quote do
-      {:__exit__, unquote(payload_ast), unquote(params_override_ast) || var!(params),
-       unquote(state_override_ast) || var!(state), unquote(tag_ast)}
+      {:__exit__, unquote(payload_ast), unquote(params_expr), unquote(state_expr),
+       unquote(tag_ast)}
     end
   end
 
@@ -170,32 +177,19 @@ defmodule ExFSM do
   @doc """
   Declares a transition (state + event) controlled by a rule graph.
   Inside: `defrule a(params, state)`, `defrules_commit/1`, `defrules_exit/3`.
+
+      deftrans_rules my_state(:my_event) do ... end
   """
-  defmacro deftrans_rules({state_ast, _m, [{event_ast, params}, obj | _]} = _sig, do: block) do
+  defmacro deftrans_rules({state_ast, _m, [event_ast]}, do: block) when is_atom(event_ast) do
     mod = __CALLER__.module
-    # mark the active ruleset for the block
     Module.put_attribute(mod, :current_ruleset, {state_ast, event_ast})
 
-    # ensure we have a rules_graph entry to mutate from defrule/2
     rg = Module.get_attribute(mod, :rules_graph) || %{}
-
-    Module.put_attribute(
-      mod,
-      :rules_graph,
-      Map.put_new(rg, {state_ast, event_ast}, %{entry: nil, graph: %{}, weights: %{}})
-    )
+    Module.put_attribute(mod, :rules_graph, Map.put_new(rg, {state_ast, event_ast}, %{entry: nil, graph: %{}, weights: %{}}))
 
     quote do
-      def match_trans(
-            unquote(state_ast),
-            unquote(event_ast),
-            unquote(ExFSM.underscore_vars(obj)),
-            unquote(ExFSM.underscore_vars(params))
-          ),
-          do: true
-
+      def match_trans(unquote(state_ast), unquote(event_ast), _, _), do: true
       unquote(block)
-      # do NOT reset @current_ruleset here — defrules_exit/3 still needs it
     end
   end
 
@@ -244,11 +238,9 @@ defmodule ExFSM do
     ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
     graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
 
-    Module.put_attribute(
-      mod,
-      :rules_graph,
-      Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph})
-    )
+    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
+    Module.put_attribute(mod, :current_rule_params_var, params_ast)
+    Module.put_attribute(mod, :current_rule_state_var, state_ast)
 
     fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
 
@@ -272,11 +264,9 @@ defmodule ExFSM do
     ruleset = Map.get(rules_graph, {st, ev}, %{entry: nil, graph: %{}, weights: %{}})
     graph = Map.put(ruleset.graph || %{}, name_ast, %{next: nexts})
 
-    Module.put_attribute(
-      mod,
-      :rules_graph,
-      Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph})
-    )
+    Module.put_attribute(mod, :rules_graph, Map.put(rules_graph, {st, ev}, %{ruleset | graph: graph}))
+    Module.put_attribute(mod, :current_rule_params_var, params_ast)
+    Module.put_attribute(mod, :current_rule_state_var, state_ast)
 
     fun = String.to_atom("__rule__" <> Atom.to_string(name_ast))
 
