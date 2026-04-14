@@ -2,15 +2,24 @@
 
 defmodule ExFSM.Meta do
   @moduledoc """
-  Process-dictionary store for per-execution FSM metadata.
+  Process-dictionary store for per-transition FSM metadata.
 
-  Holds the initial state/params and the running `ExFSM.Acc` for the duration
-  of a single `RuleEngine.run/5` or `RuleEngine.replay/6` call.
+  Holds the initial state/params, the running `ExFSM.Acc`, and a free-form
+  `delta` map for user-defined side-channel data — for the duration of a single
+  `RuleEngine.run/5` or `RuleEngine.replay/6` call.
 
-  **Threading fsm_model assumption**: this module is safe only when each FSM
-  execution runs within a single, dedicated process (e.g., wrapped in a
-  short-lived GenServer / transactor). Concurrent calls sharing a process
-  would corrupt the stored metadata.
+  **Reset guarantee**: `init/3` is called at the start of every `RuleEngine.run`
+  and `RuleEngine.replay`, unconditionally resetting all fields (including `delta`).
+  Meta from a previous transition is never visible inside the next one.
+
+  **Transactor assumption**: this module is safe only when each FSM execution runs
+  within a single, dedicated process (e.g., wrapped in a short-lived GenServer /
+  transactor). Do not call `Machine.event/3` recursively from within a running
+  transition on the same process — the inner call would reset meta and corrupt
+  the outer call's context.
+
+  Use `ExFSM.meta_put/2` to write custom fields to `delta`. The final `delta`
+  is surfaced in `opts[:meta]` returned by `Machine.event/3`.
   """
 
   @key :exfsm_meta

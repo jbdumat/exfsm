@@ -421,7 +421,7 @@ defmodule ExFSMTest do
   end
 
   # ---------------------------------------------------------------------------
-  # 10. keep_state_name / keep_state (classic deftrans)
+  # 11. keep_state_name / keep_state (classic deftrans)
   # ---------------------------------------------------------------------------
 
   describe "keep_state_name and keep_state — classic deftrans" do
@@ -446,7 +446,7 @@ defmodule ExFSMTest do
   end
 
   # ---------------------------------------------------------------------------
-  # 11. keep_state_name / keep_state (rules defrules_exit)
+  # 12. keep_state_name / keep_state (rules defrules_exit)
   # ---------------------------------------------------------------------------
 
   describe "keep_state_name and keep_state — defrules_exit" do
@@ -471,7 +471,52 @@ defmodule ExFSMTest do
   end
 
   # ---------------------------------------------------------------------------
-  # 9. ExFSM.Meta
+  # 9. ExFSM.meta_put / opts[:meta] surfacing
+  # ---------------------------------------------------------------------------
+
+  describe "ExFSM.meta_put/2 and opts[:meta]" do
+    test "meta_put values are returned in opts[:meta] after a rules transition" do
+      state = %{__state__: :rules_pending_payment}
+      assert {:next_state, :paid, _new_state, opts} = Machine.event(state, {:pay, %{}})
+      assert opts[:meta] == %{payment_result: :paid}
+    end
+
+    test "meta written during an error path is also surfaced" do
+      state = %{__state__: :rules_pending_payment}
+      params = %{"fail" => "payment"}
+      assert {:next_state, :payment_error, _new_state, opts} = Machine.event(state, {:pay, params})
+      assert opts[:meta] == %{payment_result: :check_payment_error}
+    end
+
+    test "meta delta is reset at the start of each rules transition (no bleed-over)" do
+      state = %{__state__: :rules_pending_payment}
+
+      # First transition writes :payment_result => :paid
+      {:next_state, :paid, new_state, opts1} = Machine.event(state, {:pay, %{}})
+      assert opts1[:meta] == %{payment_result: :paid}
+
+      # The new state is :paid — no transition defined from there, so replay from
+      # a fresh :rules_pending_payment state to trigger a second rules run and
+      # confirm the delta was reset (only this run's key is present).
+      {:next_state, :payment_error, _, opts2} =
+        Machine.event(%{__state__: :rules_pending_payment}, {:pay, %{"fail" => "payment"}})
+
+      assert opts2[:meta] == %{payment_result: :check_payment_error}
+      # The first run's :paid value must NOT appear
+      refute opts2[:meta][:payment_result] == :paid
+
+      _ = new_state
+    end
+
+    test "opts[:meta] is absent for classic deftrans transitions" do
+      state = %{__state__: :classic_pending_payment}
+      assert {:next_state, :paid, _new_state, opts} = Machine.event(state, {:pay, %{}})
+      refute Keyword.has_key?(opts, :meta)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # 10. ExFSM.Meta (low-level)
   # ---------------------------------------------------------------------------
 
   describe "ExFSM.Meta" do

@@ -55,6 +55,26 @@ defmodule ExFSM do
   # === Meta helpers (public) ===
   def meta, do: ExFSM.Meta.get()
 
+  @doc """
+  Writes a custom field into the current transition's meta delta.
+
+  Call this from inside a `defrule` body or a `defrules_exit` handler.
+  The accumulated delta is returned in `opts[:meta]` from `Machine.event/3`
+  after the transition completes, allowing the transactor to read side-channel
+  data (e.g. `line_to_split`, `notifications`, ...) without reaching into the
+  process dictionary.
+
+  The delta is reset to `%{}` at the start of each new transition, so values
+  written during one event do not bleed into the next.
+
+      ExFSM.meta_put(:line_to_split, duplicated_entity)
+  """
+  def meta_put(key, value) do
+    m = ExFSM.Meta.get()
+    ExFSM.Meta.put(%{m | delta: Map.put(m.delta, key, value)})
+    :ok
+  end
+
   # === Explicit sugar (public helpers) ===
   def next_ok(next_rule, params, state, tag \\ :ok),
     do: {:__next__, next_rule, params, state, tag}

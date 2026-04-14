@@ -118,16 +118,17 @@ defmodule Example.DEMO_FSM do
     defrules_commit(entry: :check_payment)
 
     defrules_exit(_new_params, new_state_flow, proposed) do
-      _m = ExFSM.meta()
       IO.inspect("Rule :exit")
 
       case proposed do
         :paid ->
+          ExFSM.meta_put(:payment_result, :paid)
           {:next_state, :paid, new_state_flow}
 
         _other ->
           # IMPORTANT: keep it a next_state so Machine.event/3 returns meta [acc: acc]
           # The reason is carried by acc.exit (set by rules_exit/4).
+          ExFSM.meta_put(:payment_result, proposed)
           {:next_state, :payment_error, new_state_flow}
       end
     end

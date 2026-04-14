@@ -109,7 +109,8 @@ defmodule ExFSM.Machine do
     case ExFSM.RuleEngine.run(handler, key, params, state, fsm_mode: fsm_mode) do
       {:next_state, next, new_state, acc} ->
         {:next_state, next,
-         State.set_state_name(new_state, next, State.handlers(new_state, params)), [acc: acc]}
+         State.set_state_name(new_state, next, State.handlers(new_state, params)),
+         [acc: acc, meta: ExFSM.Meta.get().delta]}
 
       {:steps_done, p, st, ext, acc} ->
         # Let the call-site decide how to use steps_only.
