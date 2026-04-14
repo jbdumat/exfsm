@@ -4,6 +4,65 @@ defmodule ExFSMTest do
   alias ExFSM.{Machine, RuleEngine, Meta, Acc}
 
   # ---------------------------------------------------------------------------
+  # Test FSM: keep_state_name / keep_state (uses a struct to avoid conflicting
+  # with the Map protocol impl declared in Example.DEMO_FSM)
+  # ---------------------------------------------------------------------------
+
+  defmodule KeepTestState do
+    defstruct [:__state__, :value]
+  end
+
+  defmodule KeepTestFSM do
+    use ExFSM
+
+    defimpl ExFSM.Machine.State, for: KeepTestState do
+      def handlers(_state, _params), do: [KeepTestFSM]
+      def state_name(state), do: state.__state__
+      def set_state_name(state, name, _handlers), do: %{state | __state__: name}
+    end
+
+    # Returns {:keep_state_name, updated_entity} — same phase, entity changed
+    deftrans active({:update, params}, state) do
+      {:keep_state_name, %{state | value: params[:value]}}
+    end
+
+    # Returns :keep_state — entity completely untouched
+    deftrans active({:noop, _params}, state) do
+      _ = state
+      :keep_state
+    end
+
+    # Rules-based: keep_state_name from defrules_exit
+    deftrans_rules active(:rules_update) do
+      defrule do_update(params, state) do
+        rules_exit(:updated, params, %{state | value: params[:value]}, :ok)
+      end
+
+      defrules_commit(entry: :do_update)
+
+      defrules_exit(_params, new_state, proposed) do
+        case proposed do
+          :updated -> {:keep_state_name, new_state}
+          _ -> {:error, :unexpected}
+        end
+      end
+    end
+
+    # Rules-based: :keep_state from defrules_exit
+    deftrans_rules active(:rules_noop) do
+      defrule just_exit(params, state) do
+        rules_exit(:done, params, state, :ok)
+      end
+
+      defrules_commit(entry: :just_exit)
+
+      defrules_exit(_params, _new_state, _proposed) do
+        :keep_state
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # 1. Rules-based transitions (deftrans_rules)
   # ---------------------------------------------------------------------------
 
@@ -358,6 +417,56 @@ defmodule ExFSMTest do
     test "valid state but unknown event returns error" do
       state = %{__state__: :rules_pending_payment}
       assert {:error, :illegal_action} = Machine.event(state, {:unknown_event, %{}})
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # 10. keep_state_name / keep_state (classic deftrans)
+  # ---------------------------------------------------------------------------
+
+  describe "keep_state_name and keep_state — classic deftrans" do
+    test "{:keep_state_name, new_state} keeps the phase, updates entity" do
+      state = %KeepTestState{__state__: :active, value: :old}
+      assert {:next_state, :active, new_state, opts} =
+               Machine.event(state, {:update, [value: :new]})
+
+      assert new_state.__state__ == :active
+      assert new_state.value == :new
+      assert opts == []
+    end
+
+    test ":keep_state keeps both phase and entity untouched" do
+      state = %KeepTestState{__state__: :active, value: :original}
+      assert {:next_state, :active, new_state, opts} =
+               Machine.event(state, {:noop, %{}})
+
+      assert new_state == state
+      assert opts == []
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # 11. keep_state_name / keep_state (rules defrules_exit)
+  # ---------------------------------------------------------------------------
+
+  describe "keep_state_name and keep_state — defrules_exit" do
+    test "{:keep_state_name, new_state} from defrules_exit keeps phase, updates entity" do
+      state = %KeepTestState{__state__: :active, value: :old}
+      assert {:next_state, :active, new_state, opts} =
+               Machine.event(state, {:rules_update, [value: :new]})
+
+      assert new_state.__state__ == :active
+      assert new_state.value == :new
+      assert %Acc{} = opts[:acc]
+    end
+
+    test ":keep_state from defrules_exit keeps both phase and entity untouched" do
+      state = %KeepTestState{__state__: :active, value: :original}
+      assert {:next_state, :active, new_state, opts} =
+               Machine.event(state, {:rules_noop, %{}})
+
+      assert new_state == state
+      assert %Acc{} = opts[:acc]
     end
   end
 

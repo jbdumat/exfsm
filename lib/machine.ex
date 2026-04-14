@@ -84,10 +84,13 @@ defmodule ExFSM.Machine do
         {:next_state, next, State.set_state_name(state2, next, State.handlers(state2, params)),
          []}
 
-      {:keep_state, state2} ->
-        # Stay consistent: return next_state = current name (or state2’s if changed)
-        next = State.state_name(state2)
-        {:next_state, next, state2, [keep: true]}
+      {:keep_state_name, state2} ->
+        next = State.state_name(state)
+        {:next_state, next, State.set_state_name(state2, next, State.handlers(state2, params)), []}
+
+      :keep_state ->
+        next = State.state_name(state)
+        {:next_state, next, state, []}
 
       other ->
         other
@@ -161,9 +164,15 @@ defmodule ExFSM.Machine do
           [handler | _] ->
             # Bypass classique, on unifie aussi
             case apply(handler, action, [params, state]) do
-              {:keep_state, state2} ->
-                next = Map.get(state2, :__state__, State.state_name(state))
-                {:next_state, next, state2, [keep: true, timeout: nil, acc: nil]}
+              {:keep_state_name, state2} ->
+                next = State.state_name(state)
+                {:next_state, next,
+                 State.set_state_name(state2, next, State.handlers(state2, params)),
+                 [timeout: nil, acc: nil]}
+
+              :keep_state ->
+                next = State.state_name(state)
+                {:next_state, next, state, [timeout: nil, acc: nil]}
 
               {:next_state, next, state2, timeout} ->
                 {:next_state, next,

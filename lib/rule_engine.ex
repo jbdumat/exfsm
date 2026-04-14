@@ -17,7 +17,6 @@ defmodule ExFSM.RuleEngine do
 
   @spec run(module, {atom, atom}, map(), any, keyword) ::
           {:next_state, atom, any, ExFSM.Acc.t()}
-          | {:keep_state, atom, any, ExFSM.Acc.t()}
           | {:error, term, ExFSM.Acc.t()}
           | {:steps_done, map(), map(), any, ExFSM.Acc.t()}
   def run(handler, {state_name, event} = key, params, external_state, opts \\ []) do
@@ -61,7 +60,6 @@ defmodule ExFSM.RuleEngine do
 
   @spec replay(module, {atom, atom}, map(), any, ExFSM.Acc.t(), keyword) ::
           {:next_state, atom, any, ExFSM.Acc.t()}
-          | {:keep_state, atom, any, ExFSM.Acc.t()}
           | {:error, term, ExFSM.Acc.t()}
           | {:steps_done, map(), map(), any, ExFSM.Acc.t()}
   def replay(
@@ -353,8 +351,11 @@ defmodule ExFSM.RuleEngine do
           {:next_state, name, new_external_state} ->
             {:next_state, name, new_external_state, acc}
 
-          {:keep_state, name, same_external_state} ->
-            {:keep_state, name, same_external_state, acc}
+          {:keep_state_name, new_external_state} ->
+            {:next_state, state_name, new_external_state, acc}
+
+          :keep_state ->
+            {:next_state, state_name, acc.state, acc}
 
           {:error, reason} ->
             {:error, reason, acc}

@@ -132,7 +132,8 @@ defmodule ExFSM do
           ({event_name :: atom, event_param :: any}, state :: any ->
              {:next_state, next_state :: atom, state :: any}
              | {:next_state, next_state :: atom, state :: any, non_neg_integer}
-             | {:keep_state, state :: any}
+             | {:keep_state_name, state :: any}
+             | :keep_state
              | {:error, term})
 
   defmacro deftrans({state, _meta, [{trans, params}, obj | _]} = signature, body_block) do
@@ -356,8 +357,15 @@ defmodule ExFSM do
   Exit handler: `defrules_exit(new_params, new_state, proposed) do ... end`.
 
   Receives final `new_params`, `new_state` (flow state), and `proposed` (the exit payload
-  from `rules_exit/4`). Must return `{:next_state, ...}` / `{:keep_state, ...}` / `{:error, ...}`.
+  from `rules_exit/4`). Must return one of:
+    * `{:next_state, next_state_name, new_state}` — change phase and/or entity
+    * `{:keep_state_name, new_state}` — same phase, entity may have changed
+    * `:keep_state` — entity completely untouched (phase unchanged)
+    * `{:error, reason}`
+
   Access `ExFSM.meta()` for `initial_state`, `initial_params`, `acc`, `delta`.
+  Use `ExFSM.meta_put(key, value)` to attach custom fields to `delta`; they will
+  be returned in `opts[:meta]` from `Machine.event/3`.
   """
   defmacro defrules_exit(new_params_ast, new_state_ast, proposed_ast, do: body_ast) do
     mod = __CALLER__.module
